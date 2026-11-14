@@ -414,8 +414,26 @@ def _voice_record(call_id: str, prompt: str, language: str = "hi-IN") -> Respons
             call_id, len(call.get("history", [])), call["audio_token"]))
     else:
         voice.say(prompt, language=language)
-    if call is not None and call.get("phase") == "approval":
+    trial_mode = (os.getenv("TWILIO_TRIAL_MODE") or "false").lower() in (
+        "1", "true", "yes", "on")
+    if call is not None and call.get("phase") == "approval" and not trial_mode:
         voice.say("Haan ya nahi boliye.", language=language)
+    if trial_mode:
+        from twilio.twiml.voice_response import Gather
+        gather = Gather(
+            input="speech",
+            action="%s/twilio/gather?call_id=%s" %
+            (twilio_telephony.public_base_url(), call_id),
+            method="POST",
+            language=language,
+            speech_timeout="auto",
+            action_on_empty_result=True,
+        )
+        gather.say("Haan ya nahi boliye.", language=language)
+        voice.append(gather)
+        voice.redirect("%s/twilio/voice?call_id=%s" %
+                       (twilio_telephony.public_base_url(), call_id), method="POST")
+        return _twilio_response(str(voice))
     voice.record(
         action="%s/twilio/recording?call_id=%s" %
         (twilio_telephony.public_base_url(), call_id),

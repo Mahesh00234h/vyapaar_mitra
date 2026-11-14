@@ -159,6 +159,7 @@ SARVAM_API_KEY=...
 LLM_MODE=live
 TWILIO_VALIDATE_WEBHOOKS=true
 TWILIO_STATUS_CALLBACK=false
+TWILIO_TRIAL_MODE=true
 ```
 
 The Twilio number must be voice-capable. Trial accounts can call only verified numbers.
@@ -175,7 +176,9 @@ Twilio records the reply, Sarvam transcribes and answers it, and the existing ca
 launches only after approval. `TWILIO_VALIDATE_WEBHOOKS=true` uses Twilio's official
 request validator in production. Set it to `false` only for local tests. Keep
 `TWILIO_STATUS_CALLBACK=false` on trial accounts. Enable it after upgrading if your
-Twilio account permits status callback parameters.
+Twilio account permits status callback parameters. `TWILIO_TRIAL_MODE=true` uses
+Twilio's trial-compatible speech gather for the approval response. Set it to `false`
+after upgrading to use the recording and Sarvam STT path.
 
 ## Cognee
 
