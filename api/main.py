@@ -391,11 +391,39 @@ async def _require_twilio_signature(request: Request, params: dict) -> None:
         raise HTTPException(status_code=403, detail="invalid Twilio webhook signature")
 
 
+def _trial_gather_enabled() -> bool:
+    return (os.getenv("TWILIO_USE_GATHER") or "false").lower() in (
+        "1", "true", "yes", "on")
+
+
+def _voice_gather(call_id: str, prompt: str, language: str = "hi-IN") -> Response:
+    """Trial-compatible speech input without Twilio recording access."""
+    from twilio.twiml.voice_response import Gather, VoiceResponse
+
+    voice = VoiceResponse()
+    gather = Gather(
+        input="speech",
+        action="%s/twilio/gather?call_id=%s" %
+        (twilio_telephony.public_base_url(), call_id),
+        method="POST",
+        language=language,
+        speech_timeout="auto",
+        action_on_empty_result=True,
+    )
+    gather.say(prompt, language=language)
+    voice.append(gather)
+    voice.say("Aapka jawab nahi mila. Dhanyavaad.", language=language)
+    voice.hangup()
+    return _twilio_response(str(voice))
+
+
 def _voice_record(call_id: str, prompt: str, language: str = "hi-IN") -> Response:
     """Render Sarvam audio, then record the next caller turn for Sarvam STT."""
     from twilio.twiml.voice_response import VoiceResponse
 
     call = local_soundbox.PENDING.get(call_id)
+    if _trial_gather_enabled():
+        return _voice_gather(call_id, prompt, language)
     voice = VoiceResponse()
     audio = None
     if call is not None:
@@ -414,26 +442,8 @@ def _voice_record(call_id: str, prompt: str, language: str = "hi-IN") -> Respons
             call_id, len(call.get("history", [])), call["audio_token"]))
     else:
         voice.say(prompt, language=language)
-    trial_mode = (os.getenv("TWILIO_TRIAL_MODE") or "false").lower() in (
-        "1", "true", "yes", "on")
-    if call is not None and call.get("phase") == "approval" and not trial_mode:
+    if call is not None and call.get("phase") == "approval":
         voice.say("Haan ya nahi boliye.", language=language)
-    if trial_mode:
-        from twilio.twiml.voice_response import Gather
-        gather = Gather(
-            input="speech",
-            action="%s/twilio/gather?call_id=%s" %
-            (twilio_telephony.public_base_url(), call_id),
-            method="POST",
-            language=language,
-            speech_timeout="auto",
-            action_on_empty_result=True,
-        )
-        gather.say("Haan ya nahi boliye.", language=language)
-        voice.append(gather)
-        voice.redirect("%s/twilio/voice?call_id=%s" %
-                       (twilio_telephony.public_base_url(), call_id), method="POST")
-        return _twilio_response(str(voice))
     voice.record(
         action="%s/twilio/recording?call_id=%s" %
         (twilio_telephony.public_base_url(), call_id),
@@ -618,6 +628,8 @@ async def twilio_gather(request: Request, call_id: str = "", SpeechResult: str =
     classification = local_soundbox.classify_reply((SpeechResult or "").strip())
     outcome = classification["outcome"]
     if outcome == "unclear":
+        if _trial_gather_enabled():
+            return _voice_gather(call_id, "Haan ya nahi boliye.", call["brief"].language)
         return _conversation_response(call_id, "Haan ya nahi boliye.", call["brief"].language)
     decision = local_soundbox.settle(
         call_id, outcome, transcript=SpeechResult, via="twilio",
