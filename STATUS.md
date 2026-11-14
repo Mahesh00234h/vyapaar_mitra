@@ -1,0 +1,1716 @@
+# STATUS
+
+Build log for Vyapaar Mitra. Newest step at the top.
+
+## DEMO DAY STARTUP SEQUENCE, Sat 19 Sep
+
+Run this in order. **Three PowerShell windows.** Two of them stay open all day doing
+nothing but running a process, the third is where you type. Nothing below needs the internet
+except cloudflared itself and the live Sarvam call.
+
+**Every window that runs a `python` command needs the venv activated first.** Forgetting this
+gives `ModuleNotFoundError: No module named 'httpx'`, because bare `python` on this machine is
+the system one, not the project's.
+
+### 1. Window one: start the API and leave it alone
+
+```powershell
+cd C:\Dev\dukaandost
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn api.main:app --port 8000
+```
+
+Leave it running.
+
+### 2. Window two: start the tunnel and leave it alone
+
+```powershell
+cd C:\Dev\dukaandost
+cloudflared tunnel --url http://localhost:8000
+```
+
+No venv needed here, cloudflared is not Python.
+
+It prints a line like `https://random-words-here.trycloudflare.com`. **Copy it.** It changes
+every time cloudflared restarts, which is why step four exists.
+
+### 3. Window three: the one you actually type in
+
+```powershell
+cd C:\Dev\dukaandost
+.\.venv\Scripts\Activate.ps1
+$tunnel = "https://random-words-here.trycloudflare.com"
+```
+
+The prompt should now start with `(.venv)`. Everything from here runs in this window.
+
+### 4. Paste the tunnel URL into the four places it has to go
+
+| # | Where | What to set it to |
+|---|---|---|
+| 1 | **Sarvam agent, the `launch_campaign` tool URL** | `<tunnel>/campaign/launch` |
+| 2 | **n8n node "Where the backend lives"** in `nightly_parent.json` | `<tunnel>` in the `base_url` field |
+| 3 | **n8n node "Write the failure to the decision log"** in `error_handler.json` | `<tunnel>/decisions` |
+| 4 | **n8n node "Record the outcome in the backend"** in `call_webhook.json` | `<tunnel>/call/outcome` |
+
+Number two is the only one the sub workflow needs; it inherits `base_url` from the parent, so
+none of its own nodes have a URL to change. Numbers 3 and 4 are workflows with no parent to
+inherit from, which is why they carry their own.
+
+Save each n8n workflow after editing.
+
+### 5. Activate the n8n workflows
+
+In n8n Cloud, toggle Active on:
+
+1. **Vyapaar Mitra error handler** (first, so the others have something to report to)
+2. **Vyapaar Mitra call ended callback**, then copy its **Production webhook URL** and paste
+   it into the Sarvam agent as the post call webhook
+3. **Vyapaar Mitra run one merchant**
+4. **Vyapaar Mitra run one merchant, demo mode**
+5. **Vyapaar Mitra nightly run**
+
+Confirm each one's Settings has Error Workflow set to the error handler.
+
+### 6. Set the demo memory state
+
+Six measured campaigns, so the learning curve in panel six has something to draw:
+
+```powershell
+Remove-Item data\memory.db -ErrorAction SilentlyContinue
+$env:LLM_MODE = "replay"
+python -m scripts.run_campaigns --campaigns 6
+```
+
+**Rehearsing the full flow adds campaigns.** Every real approval through
+`/campaign/launch` writes another campaign, so if you practise the whole loop, run this step
+again before you present. The preflight prints the count. The tunnel probe in
+`demo_check` does not add one, it sends `approved: false` on purpose.
+
+**Know what this does to panel two.** With six campaigns measured, the winback row reads
+about 302, 397, 278 rather than the day one 148.03, 186.62, 107.02, because the agent has
+learned this shop responds harder than the priors assumed. Both are correct. If you would
+rather show the day one grid, delete `data/memory.db` and accept an empty panel six.
+
+### 7. Open a fresh call
+
+```powershell
+$call = Invoke-RestMethod -Method Post -Uri http://localhost:8000/call -ContentType 'application/json' -Body '{}'
+$call.call_id
+Start-Process "http://localhost:8000/soundbox?call_id=$($call.call_id)"
+```
+
+That opens the soundbox page with the HAAN and NAHI buttons. **Open a fresh call again right
+before you walk on**, because a call that has already been answered cannot be answered twice.
+
+### 8. Open the dashboard and confirm
+
+```powershell
+Start-Process "http://localhost:8000/"
+```
+
+Look for: twelve lapsed customers in panel one, a green MEDIUM cell in panel two, the Hindi
+script in panel three, ten named messages and two greyed control cards in panel four, and a
+climbing green line in panel six.
+
+### 9. Run the preflight
+
+```powershell
+python -m scripts.demo_check --tunnel $tunnel
+```
+
+Ten checks, one line each. It exits non zero if anything is wrong and tells you the command
+to fix it. The tunnel probe posts to `/campaign/launch` with `approved: false` on purpose, so
+it proves the route the Sarvam tool uses without messaging a single customer.
+
+Run it again after any restart of uvicorn or cloudflared.
+
+### If something breaks mid pitch
+
+- **The call does not connect.** Press HAAN on the soundbox page. The Decision is identical.
+- **The tunnel dies.** Everything except the live Sarvam call runs on localhost. The
+  dashboard, the soundbox and the whole loop keep working.
+- **The model is slow or down.** `$env:LLM_MODE = "replay"` and restart uvicorn. Every
+  answer comes off disk, including the Hindi script and its audio.
+- **Anything else.** Cut to the backup video.
+
+---
+
+## Step 8: Cognee memory behind an interface (Sat 19 Sep, one hour timebox)
+
+Status: **interface done and tested, cognee itself not running. SQLite is the default and
+the demo path is untouched.** 209 tests pass, 1 skipped.
+
+### 1. What cognee needs, checked rather than assumed
+
+`cognify()` needs **two** separate providers, and they are not the same thing:
+
+| need | what it is for | can Sarvam do it |
+|---|---|---|
+| a chat model | pulling entities and relationships out of text | **yes**, `sarvam-105b` is OpenAI compatible and cognee routes through litellm, which takes a custom base URL |
+| an **embedding** model | turning those entities into vectors for the store | **no** |
+
+The second one is the blocker, and it is not close. Sarvam's own API index lists speech to
+text, text to speech, chat, translation and vision. Searching the whole index for
+`embed` case insensitively returns **zero matches**. There is no embeddings endpoint to point
+at. The dependency tree says the same thing from the other side: installing cognee pulls in
+`lancedb` and `pylance`, a vector database and its engine, which exist to hold embeddings.
+
+So cognee needs a provider we do not have. Per the instruction for this step, that is where
+it stops. The options would have been an OpenAI key, which costs money and which CLAUDE.md
+rules out, or a local embedding model, which is exactly the working around that the
+instruction said not to do.
+
+**A second, smaller blocker worth recording:** `pip install cognee` pulls roughly 175 MB of
+wheels, including `lancedb` at 104 MB and `pylance` at 46 MB. On the connection here that ran
+at 260 kB/s and took well over half the timebox. Even with an embedding provider, this is not
+something to install for the first time on demo morning.
+
+**It did finish, in the end.** A background install I thought I had cancelled completed after
+the hour, so **cognee 1.5.4 is now in the venv**. That is good news for the evidence and
+changes nothing about the conclusion: with cognee genuinely importable, the readiness probe
+reports what it actually finds.
+
+```
+installed    True
+llm          sarvam-105b over the OpenAI compatible endpoint, via litellm
+embeddings   None
+ready        False
+blockers     ['no embedding provider. Sarvam has no embeddings endpoint, so cognify has
+              no way to vectorise anything without a second provider']
+```
+
+So the blocker is confirmed against the real library rather than inferred from its
+dependency list. Asking for the cognee backend now exercises the fallback for real:
+
+```
+asked for cognee, got: sqlite
+note : sqlite, because cognee could not start: no embedding provider. Sarvam has no
+       embeddings endpoint, so cognify has no way to vectorise anything without a
+       second provider
+```
+
+Core dependency versions did not move: httpx 0.28.1, fastapi 0.141.1, pydantic 2.13.5, all
+as before. The full suite still passes. cognee adds about fifty seconds to a full test run
+and a dozen deprecation warnings of its own, which is the price of having it sitting there
+unused.
+
+### 2. What is real
+
+`memory/graph.py`, with three operations and two backends:
+
+```
+write_campaign_outcome(merchant_id, campaign_id)   what was proposed, predicted, delivered
+merchant_history(merchant_id)                      everything this shop has taught us
+campaigns_like(merchant_id, action_type, segment_kind, offer_level)
+```
+
+`SqliteGraph` is complete, exercised and the default. It reads the tables `memory/store.py`
+already writes and returns a record shaped as **proposed, approved, predicted, delivered**,
+which is the promise in the deck. Against the six campaign memory:
+
+```
+backend : sqlite | sqlite campaign memory
+history : 6 campaigns
+first   : seq=1 lapsed_winback to lapsed_regulars at MEDIUM
+          predicted 0.140 profit 186.62
+          delivered 0.200 profit 364.33
+like    : 6 matching winbacks to lapsed regulars
+```
+
+`cognee_readiness()` reports exactly what is missing rather than failing, and `open_memory()`
+hands back SQLite with a note saying why when cognee cannot start. `MEMORY_BACKEND` selects,
+defaulting to `sqlite`.
+
+One schema change was needed: campaigns now store `segment_kind`, because querying past
+campaigns by segment is one of the three operations and the column did not exist. Added with
+a real migration, `ALTER TABLE` on a database that predates the column, since
+`CREATE TABLE IF NOT EXISTS` silently does nothing to a table that is already there.
+
+### 3. What is not real, plainly
+
+**`CogneeGraph` has never ingested anything.** cognee is installed, so `__init__` really
+runs and really raises `CogneeUnavailable` on the missing embedding provider, which is the
+path the fallback depends on and is now proven. But `_add()`, the method that would put a
+campaign into the graph, has never executed. It is written against cognee's documented
+`add()` and `cognify()` API and may be wrong about the exact call shape. cognee 1.5.4 also
+warns on import that its 1.0 release introduced a new `remember` and `recall` API alongside
+the old one, so that code would want rechecking before anyone relies on it.
+
+Nothing depends on it. The test that would compare the two backends **skips**, with the
+reason printed, rather than passing on a technicality:
+
+```
+10 passed, 1 skipped
+```
+
+### 4. The graph query that would have been the point, not demonstrated
+
+Requirement four was to show one thing the graph does that the table does not. **It is not
+shown, because cognee does not run here.** Writing an imaginary output would be worse than
+saying that.
+
+For the record, the query worth having was: *given a new candidate, find campaigns at any
+merchant that targeted a similar segment with a similar mechanic, and tell me what actually
+happened.* That is awkward in SQL because similar is not a join condition, and it is the
+thing a graph plus embeddings is genuinely better at. Today `campaigns_like()` does the exact
+match version of it, which is enough for one merchant and not enough for forty million.
+
+### 5. The demo path is untouched
+
+- `MEMORY_BACKEND` defaults to `sqlite` and a test asserts it.
+- Asking for `cognee` and not getting it returns a working memory plus an explanation, and a
+  test asserts the fallback returns **identical** history.
+- A test asserts `triage.py`, `generate.py`, `simulate.py`, `measure.py` and `holdout.py`
+  contain neither `memory.graph` nor `MEMORY_BACKEND`, so the backend cannot move a number.
+- A test asserts the learned response scale is identical with either backend set.
+- **cognee is deliberately not in `requirements.txt`,** even though it is in this venv.
+  Adding a 175 MB dependency that cannot run would make a fresh clone slower and no more
+  capable. Nothing on the default path imports it, so it costs the demo nothing.
+
+If asked on stage: the memory layer is behind an interface with a graph backend written
+against it, the content is already there, and the thing standing between us and a live
+knowledge graph is that Sarvam has no embeddings endpoint and we chose not to add a second
+paid provider the night before.
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+209 passed, 1 skipped in 114.77s
+```
+
+---
+
+## Step 7: n8n orchestration (Fri 18 Sep, late afternoon)
+
+Status: **done, 166 tests pass, 23 of them checking the workflow JSON.**
+
+### The five workflows
+
+| file | what it is |
+|---|---|
+| `nightly_parent.json` | Schedule trigger at 9pm, fans out over merchants, calls the sub workflow once each |
+| `run_one_merchant.json` | The real loop for one shop, including the 72 hour Wait |
+| `run_one_merchant_demo.json` | Same canvas, manual trigger, 5 second Wait so it finishes on stage |
+| `call_webhook.json` | Receives Sarvam's post call callback, reads the outcome, records it |
+| `error_handler.json` | Error workflow for all of the above |
+
+The sub workflow canvas, in order:
+
+```
+  Start the night for one merchant               executeWorkflowTrigger
+  Is anything wrong at this shop                 httpRequest
+  Is it worth a phone call                       if
+  No call tonight                                noOp
+  Write down that we stayed quiet                httpRequest
+  Ask the model what to try                      httpRequest
+  Price every offer depth                        httpRequest
+  Phone the shopkeeper in Hindi                  httpRequest
+  Wait for the merchant to answer                wait
+  What did he say                                switch
+  Hold back fifteen percent at random            code
+  Send the Hindi messages                        httpRequest
+  Wait seventy two hours                         wait
+  Measure what actually happened                 httpRequest
+  Write the lesson back to memory                httpRequest
+  Log that he said no                            httpRequest
+  Log that nobody picked up                      httpRequest
+```
+
+### The two URLs, each in one place
+
+**The backend URL** is the `base_url` field of the Set node named "Where the backend lives"
+in the parent, defaulted to `http://localhost:8000`. The parent passes it to the sub
+workflow, and every HTTP node reads it from there with
+`$('Start the night for one merchant').first().json.base_url`. Neither the parent nor the sub
+workflow contains a host anywhere else, and a test enforces that.
+
+**The Sarvam callback URL** is issued by n8n from the Webhook node in `call_webhook.json`,
+path `dukaan-dost/call-ended`. We do not choose it; activate the workflow, copy it, paste it
+into the Sarvam voice agent.
+
+`call_webhook.json` and `error_handler.json` have no parent to inherit from, so each carries
+its host once in its final HTTP node. Both are named in `workflows/README.md` as the only
+other places a URL appears.
+
+### The thing I added that was not in the brief, and why
+
+The brief has `POST /call` followed directly by the three way Switch. That could not work:
+`/call` opens the call and returns immediately, so the Switch would have branched on an
+outcome that had not happened yet, and every run would have gone down the no answer path.
+
+So there is a **Wait node with webhook resume** between them, and `/call` now accepts a
+`callback_url`. The chain:
+
+1. "Phone the shopkeeper in Hindi" posts to `/call` and hands over `$execution.resumeUrl`.
+2. "Wait for the merchant to answer" parks the execution. Nothing is polling.
+3. When the merchant answers, the backend posts the Decision to that resume URL and the run
+   wakes up where it stopped.
+4. If nobody answers in three minutes the Wait resumes anyway and the Switch falls through
+   to its no answer branch, which is a real no answer rather than a timeout pretending.
+
+This is a better n8n showcase than the original shape, not a worse one: the execution pauses
+on a genuine external event. It also works identically for the soundbox buttons and for real
+telephony, because both settle through the same code path.
+
+### Four endpoints added, because a node on the canvas calls them
+
+| endpoint | why it exists |
+|---|---|
+| `POST /decisions` | The silent night, the decline, the no answer and the error handler all write one line here |
+| `POST /campaign/dispatch` | Takes the split the Code node computed, verifies it, then dispatches |
+| `POST /learning/update` | Reads the measurement back and reports the refreshed belief |
+| `POST /call/outcome` | Where Sarvam's webhook lands, producing the same Decision the soundbox does |
+
+`/campaign/dispatch` is the interesting one. The brief wanted the 85/15 split computed in a
+Code node so it is visible on the canvas rather than hidden in a service. That is a real risk:
+two implementations of the same split can drift. So the Code node hashes exactly the way
+`core/holdout.py` does, SHA-256 of `campaign id | customer id | seed`, first twelve hex digits
+as a fraction, sort, hold back the lowest fifteen percent. The backend then **re-derives the
+split independently** and returns `matches_core_holdout`. If the canvas and the code ever
+disagree, it says so instead of quietly sending to the wrong people. Structural validation
+(disjoint arms, right sizes, nobody missing) refuses the dispatch outright.
+
+A test asserts the Code node's `HOLDOUT_SHARE` and seed literals match the Python constants,
+so changing one and not the other fails the build.
+
+### Why the retry on dispatch is safe
+
+"Send the Hindi messages" has `retryOnFail` with three tries. That is only safe because the
+split is a hash rather than a shuffle: a retry recomputes the identical assignment and
+messages exactly the same ten people. A shuffle would have re-randomised on retry and
+double treated somebody, which would have quietly broken the experiment.
+
+### Two bugs my own tests caught
+
+1. **The demo workflow was broken on import.** The generator renamed the Wait node from
+   "Wait seventy two hours" to the five second version and rewrote the connections *from*
+   it, but not the connection *to* it from "Send the Hindi messages". n8n would have
+   imported a workflow with a dangling link. `test_every_connection_points_at_a_node_that_exists`
+   caught it.
+2. **My reachability test did not know a Webhook is a trigger.** It looked for the word
+   trigger in the node type, and `n8n-nodes-base.webhook` does not contain it, so it flagged
+   the Sarvam webhook as an orphan. That one was the test being wrong, not the workflow.
+
+The demo workflow is generated from the real one by a script rather than hand copied, so the
+two cannot drift. A test asserts they have identical HTTP nodes and that demo mode adds
+exactly one node, its Set node.
+
+### What has not been verified, plainly
+
+**These files have not been imported into a running n8n Cloud 2.40.2 instance.** No network
+calls were made this step and nothing here runs n8n. They are written to the node schema and
+type versions that release uses, from knowledge rather than from the 2.40.2 docs.
+
+What the 23 tests do check: valid JSON, the top level shape n8n expects, unique node names
+and ids, every connection pointing at a node that exists, every non trigger node reachable,
+node names reading as plain language, **every URL resolving to a real FastAPI route**, every
+method matching what that route accepts, every posted field existing on the pydantic model,
+the three way Switch having three distinct branches, the 72 hour Wait in the real workflow
+and a seconds Wait in the demo one, the retry settings, the error workflow reference, and the
+Code node constants matching Python.
+
+What they cannot check is whether 2.40.2 wants a different `typeVersion` for a given node.
+If something imports with a warning, open the node, re-pick the option, save. **Budget ten
+minutes for that on Friday rather than finding out on Saturday morning.**
+
+### 7a: call_id is now optional on POST /campaign/launch
+
+The Sarvam agent tool fires mid conversation and does not reliably have the call id to hand,
+so `/campaign/launch` used to 404 on exactly the call it was built for. `call_id` is now
+optional:
+
+- an explicit `call_id` still wins, and an unknown one still 404s rather than being papered
+  over by the fallback
+- absent, it resolves to the **most recently opened call for that merchant** that has a
+  chosen candidate, since a call with nothing decided has nothing to dispatch
+- a genuine 404 only when that merchant has no open call at all
+
+The response carries `call_id` and `call_id_source`, either `explicit` or
+`resolved_latest_open`, and both go into the decision log. A dispatch that guessed which call
+it belonged to should say so rather than leaving the log ambiguous.
+
+Eight tests cover it: the fallback, picking the newest of several, an explicit id winning, a
+genuine no open call 404, an unknown explicit id still 404ing, ignoring another merchant's
+calls, the log line carrying the resolved id, and a decline with no call id not 404ing.
+
+`/campaign/dispatch` is unchanged and still requires `call_id`, because n8n always has it.
+
+### Not done, by instruction
+
+n8n was not run. Cognee is still not integrated. No network calls. `.env` untouched, nothing
+pushed.
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+174 passed in 22.20s
+
+$ python -m scripts.check_data
+all checks passed
+```
+
+**Next: Cognee on a one hour timebox, then the backup video by 8pm.**
+
+---
+
+## Step 6: judge dashboard (Fri 18 Sep, afternoon)
+
+Status: **done, 143 tests pass, one URL, no build step, fully offline.**
+
+### What it is
+
+`dashboard/index.html`, served by FastAPI at **`/`** and `/dashboard`. Plain HTML, one
+`<style>` block, one `<script>` block, vanilla JS. No npm, no React, no CDN, no bundler.
+There is a test asserting the page contains no `http://`, no `https://`, no `import` and no
+`require(`, because a page that reaches for a CDN is a page that dies on venue wifi.
+
+```bash
+uvicorn api.main:app --reload
+# then open http://localhost:8000
+```
+
+That is the whole setup. The page fetches `/dashboard/state` once, renders, and polls every
+two seconds, so it updates live while someone talks over it.
+
+### One endpoint behind it
+
+`GET /dashboard/state` returns everything all six panels need in a single call. The page is
+a renderer and holds no logic of its own beyond formatting.
+
+Triage across eighteen months of ledger takes well over a second, and generation reads the
+LLM cache, so recomputing both every two seconds would have made the page crawl. They are
+cached and invalidated on the **count of measured campaigns**, which is precisely when the
+learned uplift moves and the grid genuinely needs redrawing. A test asserts a second poll
+returns in under a second.
+
+### The six panels
+
+1. **Tonight's decision.** Merchant, the three signals as plain sentences rather than JSON,
+   the opportunity in rupees a month at stake, and the verdict. The silent path is built as
+   a first class outcome: `silent_reason` comes back in the payload and the panel prints
+   **NO CALL TONIGHT** in a deliberate amber box with the sentence "the agent stays silent,
+   which is what it does most nights". There is a test for the silent state specifically.
+2. **The reasoning trace.** Every candidate with its action and segment in words ("regulars
+   who stopped coming", not `{"kind": "lapsed_regulars"}`), the LOW MEDIUM HIGH profit grid,
+   refused rows struck through with a short reason, and the line underneath: *the model
+   proposes who and what, code prices how deep*.
+3. **The call.** The filled Hindi script at 23px, the merchant's reply, the outcome, and a
+   Play button whenever cached audio exists.
+4. **Dispatch.** Ten treated cards with the real personalised Hindi, and two control cards
+   greyed and dashed reading "no message, on purpose. This is how we know it was us." The
+   holdout is shown rather than described.
+5. **Measurement.** Treated conversion, control conversion, then the subtraction written out
+   as an equation, and the recovered revenue with "over 30 days" in the label. Nothing
+   modelled appears in this panel.
+6. **Learning.** Inline SVG, hand drawn from the `/learning` series, no chart library. The
+   believed uplift climbs as a green line, the hidden truth sits as a dashed red reference,
+   and each campaign's measured lift is a point. **Campaign two is plotted below the zero
+   line in red and labelled "measured below zero".** Hiding it was never an option: it is
+   the most honest thing on the page.
+
+### The number in the brief, and when it is true
+
+The spec says the winback row should read **148.03, 186.62, 107.02 with MEDIUM chosen**. It
+does, and a test pins those three figures to two decimals. **That is the day one reading,
+against empty campaign memory**, which is what a judge sees when the demo starts.
+
+Worth knowing before Saturday: after six campaigns have been measured the same row reads
+**302.71, 397.16, 278.89**, still peaking at MEDIUM. The grid is not static. It rises
+because the agent has learned that this shop's customers respond 1.95 times as hard as the
+priors assumed, and the panel would be lying if it did not move. So the demo order matters:
+
+- open the dashboard on fresh memory to show the day one grid, or
+- run `python -m scripts.run_campaigns` first to have a full learning curve in panel six,
+  and expect panel two to show the larger, learned numbers.
+
+`rm data/memory.db` resets to day one.
+
+### How the hidden truth reaches the chart without contaminating the agent
+
+Panel six needs the reference line, and the hidden truth lives in `world/outcomes.py`, which
+**no module the agent uses may import**. So it does not import it. `scripts/run_campaigns.py`
+writes the evaluation overlay into `dashboard/learning.json`, and `api/main.py` reads that
+**file**. A test asserts the string `world.outcomes` does not appear anywhere in
+`api/main.py`, and another asserts a corrupt export file leaves the page serving 200 with
+`hidden_truth: null` rather than taking the dashboard down mid pitch.
+
+### The model's preferred level, and why it is usually not marked
+
+The brief asks for the model's preferred level and the simulator's chosen level marked
+differently. The simulator's choice is marked with a solid green cell. The model's
+preference is marked with a dashed blue outline **when there is one**, and with the current
+prompt there is not: since Step 4 the model is told not to choose a depth at all, and the
+live cached answer carries no `offer_level` field. Rather than invent one, the legend says
+so in words: *the model no longer proposes a depth at all, so there is nothing of its own to
+mark here*. Older cached answers do carry a level, and `model_suggested_level` is passed
+through untouched so those render with the dashed outline. It is never used to price
+anything.
+
+### Decisions made
+
+1. **Sentences, not tables, except the grid.** The brief said one idea per panel read from
+   six feet, so the payload ships pre written sentences like "chai travels alone, attaching
+   a snack 6 times in a hundred against 11 for filter_coffee" rather than making the page
+   assemble prose from fields.
+2. **The page never calls anything that mutates.** `/dashboard/state` is read only, so a
+   poll cannot place a call or launch a campaign by accident while it sits open on a
+   projector.
+3. **Every panel renders its own empty state.** Four of the six have nothing to show before
+   a campaign runs, and a test checks each one returns cleanly rather than throwing.
+4. **The page escapes everything it prints.** Customer ids, Hindi bodies and model written
+   titles all go through an escaper before reaching `innerHTML`.
+
+### Not done, by instruction
+
+No n8n, no Cognee, no learning curve in the soundbox page, no real telephony. `.env` was
+never opened, printed or edited. No network calls at all this step. Nothing pushed.
+
+### The dashboard rendered offline, every panel
+
+```
+  GET /dashboard serves the page                 ok
+  GET /dashboard/state                           ok
+
+PANEL 1  Tonight's decision
+  Ramesh Tea Stall, 2026-09-17
+  [lapsed regulars] 12 regulars have stopped coming, silent between 22 and 25 days
+      Rs 9460 a month
+  [off peak gap] Tuesday 14:00 to 17:00 runs 85 percent below the same hours on other days
+      Rs 506 a month
+  [basket affinity gap] chai travels alone, attaching a snack 6 times in a hundred against 11 for filter_coffee
+      Rs 1436 a month
+  opportunity Rs 9848 a month, 29 percent of revenue, decision: CALL
+  panel 1 has all three signals                  ok
+
+PANEL 2  Reasoning trace
+  candidates from the llm
+  candidate                                    LOW    MEDIUM      HIGH  chosen
+  lapsed_winback_lapsed_regulars_1         302.71    397.16    278.89   MEDIUM
+  offpeak_fill_offpeak_slot_2               -4.09x    -8.23x   -24.66x  REFUSED
+      refused: LOW: negative expected profit: -4.09 rupees over 30 days
+  attach_upsell_anchor_buyers_3           -103.00x  -236.06x  -522.64x  REFUSED
+      refused: LOW: negative expected profit: -103.00 rupees over 30 days
+  offpeak_fill_offpeak_slot_4               -4.09x    -8.23x   -24.66x  REFUSED
+      refused: LOW: negative expected profit: -4.09 rupees over 30 days
+  attach_upsell_anchor_buyers_5           -103.00x  -236.06x  -522.64x  REFUSED
+      refused: LOW: negative expected profit: -103.00 rupees over 30 days
+  note: the model proposes who and what, code prices how deep
+  winback still peaks at MEDIUM after learning   ok
+  refused candidates carry a reason              ok
+
+PANEL 3  The call
+  script: नमस्ते Ramesh जी, आपके 12 पुराने रेगुलर कस्टमर आना बंद कर गए हैं, जिससे आपको हर महीने करीब ₹9,460 का नुकसान हो रहा है। अगर हम उनके पास एक 20% chhoot chai pe भेजें तो कैसा रहेगा? हम सिर्फ 10 लोगों को ही मैसेज करेंगे, बाकी 2 को बाहर रखेंगे ताकि हमें पता चले कि ऑफर सच में काम कर रहा है या नहीं। क्या मैं भेज दूँ?
+  reply : Haan, bhej do.  ->  approved via button
+  call panel settled with audio                  ok
+
+PANEL 4  Dispatch
+  10 treated, 2 held back
+  C0073  नमस्ते C0073, हम आपको Ramesh Tea Stall में वापस देखकर बहुत खुश हैं। आपके लिए एक खास 20% chhoot chai pe तैयार है।
+  C0080  नमस्ते C0080, हम आपको Ramesh Tea Stall में वापस देखकर बहुत खुश हैं। आपके लिए एक खास 20% chhoot chai pe तैयार है।
+  C0111  नमस्ते C0111, हम आपको Ramesh Tea Stall में वापस देखकर बहुत खुश हैं। आपके लिए एक खास 20% chhoot chai pe तैयार है।
+  C0268  (control, no message: held back, never messaged)
+  C0329  (control, no message: held back, never messaged)
+  control group has no message                   ok
+
+PANEL 5  Measurement
+  treated 4 of 10 = 40 percent
+  control 0 of 2 = 0 percent
+  lift = 40 minus 0 = 40 percent, recovered Rs 2238 over 30 days
+  lift is the subtraction                        ok
+
+PANEL 6  Learning
+  no    believed   measured      truth
+  1       0.1400     0.2000       0.30
+  2       0.1448    -0.2000       0.30
+  3       0.1533     0.0000       0.30
+  4       0.1868     0.5000       0.30
+  5       0.2252     0.5000       0.30
+  6       0.2543     0.4000       0.30
+  7       0.2647     0.4000        n/a
+  headline: this shop measures 1.95 times as responsive as the priors assumed
+  six campaigns charted                          ok
+  hidden truth present for the reference line    ok
+  a negative measurement is present and not hidden ok
+
+ALL DASHBOARD CHECKS PASSED OFFLINE
+```
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+143 passed in 32.65s
+```
+
+**Next: Step 7, n8n orchestration.**
+
+---
+
+## Step 5: holdout, measurement, learning (Fri 18 Sep, midday)
+
+Status: **done, 124 tests pass, the whole loop runs offline, the agent learns.**
+
+### 1. What saaras:v3 actually returns for spoken Hindi
+
+Checked properly rather than guessed. No microphone was needed: `bulbul:v3` spoke each
+phrase, and that audio went straight back into `saaras:v3`. Real synthesis in, real
+transcription out, over the live API on 18 Sep 2026.
+
+| sent to TTS | returned by STT |
+|---|---|
+| `हाँ` | `हाँ।` |
+| `हां भेज दो` | `हाँ, भेज दो।` |
+| `जी हाँ` | `जी हां।` |
+| `नहीं` | `नहीं।` |
+| `मत भेजो` | `मत भेजो।` |
+| `ठीक है भेज दीजिए` | `ठीक है, भेज दीजिए।` |
+
+**The answer is Devanagari, with punctuation, never romanised.** Default `transcribe` mode
+normalises and adds a comma and a danda. Romanised output is available, but it is a
+different mode (`translit`), not what you get by default.
+
+**The trap, and it is a real one:** look at rows one and three. The same spoken word came
+back with a **chandrabindu** once and an **anusvara** the next time. Those are two different
+code points, U+0901 and U+0902, so a naive phrase list matches one spelling and silently
+misses the other. The classifier now folds chandrabindu onto anusvara before matching, so
+one spelling in the list covers both. All eight approval forms and five refusal forms in the
+tests pass, in Devanagari, romanised and mixed.
+
+This sits on top of the Step 4 finding that Devanagari vowel signs are not `isalnum()`.
+Indic text has now bitten this codebase twice in two different ways.
+
+### 2. The holdout
+
+`core/holdout.py` assigns by hashing the campaign id, customer id and seed, rather than by
+shuffling a list. Hashing means a customer's arm can be recomputed from nothing at any
+later point, which is what makes an n8n retry safe: the same campaign always produces the
+same split, in any order the segment arrives, on any machine.
+
+Tested: deterministic, order independent, disjoint, exhaustive, exactly 85 and 15, and a
+different campaign gives a different split so nobody is held back forever. `validate()`
+refuses to persist a broken assignment rather than writing it and hoping.
+
+Assignments live in `data/memory.db`, a **separate database from the ledger**. The ledger is
+the shop's evidence and is opened read only everywhere. What the agent did is our record,
+and a bug in the agent must not be able to corrupt the evidence it reasons about.
+
+### 3. Dispatch
+
+`core/dispatch.py` renders one Hindi message per treated customer from the chosen
+candidate's template, with every figure filled by code. Rows land in the `messages` table
+for the dashboard. **The control group is never rendered and never written**, enforced at
+dispatch, because not messaging them is the entire experiment.
+
+**Nothing is sent. WhatsApp Business API is the production path**, and it needs business
+verification plus template approval, which is days rather than hours. That is a decision,
+not an omission, and it gets said on stage.
+
+A test caught a defect worth keeping: the fixture template contains `{days_absent}`, and
+when the facts for a customer were missing the message rendered as *"Aapko Ramesh Tea Stall
+pe {days_absent} din se dekha nahi"*. Dispatch now blocks any message still carrying an
+unfilled placeholder and records the reason instead of sending it. Sending a customer a
+sentence full of curly braces is worse than sending nothing.
+
+### 4. The simulated world
+
+`world/outcomes.py`, in its own package, behind a box comment, **never imported by
+`triage.py`, `generate.py`, `simulate.py`, `measure.py`, `holdout.py` or `dispatch.py`**.
+There is a test asserting exactly that, because an agent that can read the answer key is
+not predicting anything and its learning curve would be a lie.
+
+The hidden truth, which the agent never sees:
+
+```
+TRUE_OFFER_UPLIFT         LOW 0.18   MEDIUM 0.30   HIGH 0.38
+TRUE_BASELINE_RETURN_RATE 0.06
+```
+
+One correction to the brief, which said to set the truth above "the 0.08 MEDIUM prior":
+0.08 is the **LOW** prior. `PRIOR_OFFER_UPLIFT` is LOW 0.08, MEDIUM 0.14, HIGH 0.20. Every
+hidden value is set clearly above its own level's prior, so the agent starts underestimating
+at every depth and has to be taught otherwise.
+
+Measurement is `core/measure.py` and it is subtraction:
+
+```
+lift = treated_returns / treated_n  -  control_returns / control_n
+```
+
+No model, no prior, no coefficient. It reports a negative lift when the treated group does
+worse, and there is a test for that too.
+
+### 5. Six campaigns, and what they show
+
+```
+Six campaigns, same twelve customers, same action, learning as it goes
+==============================================================================
+  no  level    believed  measured    treated   control    pred prof     actual
+  1   MEDIUM     0.1400    0.2000      2/10       0/2        186.62     364.33
+  2   MEDIUM     0.1448   -0.2000      3/10       1/2        194.81    -620.88
+  3   MEDIUM     0.1533    0.0000      5/10       1/2        209.14    -148.56
+  4   MEDIUM     0.1868    0.5000      5/10       0/2        265.60     857.12
+  5   MEDIUM     0.2252    0.5000      5/10       0/2        330.55    1001.66
+  6   MEDIUM     0.2543    0.4000      4/10       0/2        379.60     776.76
+
+  Belief against the hidden truth, which is the learning curve that matters:
+  no    believed      truth        error
+  1       0.1400     0.3000       0.1600
+  2       0.1448     0.3000       0.1552
+  3       0.1533     0.3000       0.1467
+  4       0.1868     0.3000       0.1132
+  5       0.2252     0.3000       0.0748
+  6       0.2543     0.3000       0.0457
+
+  The hidden truth for MEDIUM is 0.30. The agent never sees it.
+  Campaign 1 predicted 0.1400, off by 0.1600.
+  Campaign 6 predicted 0.2543, off by 0.0457.
+
+  first campaign uplift source:      PRIOR_OFFER_UPLIFT[MEDIUM] = 0.14, a named constant, replaced by measured lift a
+  last campaign uplift source:       MEASURED, 0.254: 0.14 prior times a measured response scale of 1.82, from 5 camp
+
+  Series written to dashboard\learning.json
+```
+
+**The believed uplift climbs monotonically toward the hidden 0.30, and the error falls from
+0.160 to 0.046.** Campaign one predicts from a hardcoded prior. Campaign six predicts from
+this shop's own customers.
+
+**The honest part, and it is the more interesting half of the story.** Look at the
+`measured` column: 0.20, then **-0.20**, then 0.00, then 0.50. A single campaign's measured
+lift is close to meaningless here, and the reason is arithmetic rather than bad luck.
+Fifteen percent of a twelve person cohort is a **two person control group**, and a rate
+estimated from two people can only be 0, 0.5 or 1. In campaign two one of those two happened
+to come back on their own, which put the control rate at 50 percent against a true 6 percent
+and dragged the measured lift negative.
+
+Two changes make the learning survive that, and both are ordinary statistics rather than
+tricks:
+
+1. **Pool the counts, do not average the lifts.** Adding the numerators and denominators
+   across campaigns before dividing is the standard way to combine small strata. Averaging
+   per campaign ratios lets one unlucky campaign swing the whole estimate.
+2. **Pool the control arm with the ledger's own unprompted lapse episodes.** The randomised
+   control and the historical episodes measure the same quantity, an untouched regular
+   coming back by themselves, so they are pooled, with the randomised control dominating as
+   it grows. This is the hierarchical answer from the prepared questions, made executable:
+   borrow strength early, stop borrowing once you have your own evidence. **Measurement
+   itself never does this. Only learning does.**
+
+There is a test asserting no single campaign moves the belief by more than 0.10, so the
+negative measurement in campaign two cannot wreck the model.
+
+Also learned the hard way: learning a separate uplift **per offer level** does not work at
+this scale, because it splits already thin evidence three ways. The shape across levels is
+kept from the priors, which encode the ordinary fact that a deeper discount pulls harder,
+and only the overall **response scale** is learned. Every campaign at any level contributes
+to one number. After six campaigns this shop is measured at 1.82 times as responsive as the
+priors assumed.
+
+### 6. Endpoints
+
+`POST /measure` is real. `GET /learning` returns the series and the learned scale.
+`GET /grid` returns the candidate by level grid with what the model proposed and which level
+the simulator picked. `POST /campaign/launch` now genuinely assigns the holdout, records the
+prediction **before** dispatch, and renders the messages.
+
+Predictions are written at prediction time on purpose. A prediction stored after the outcome
+is known is not a prediction.
+
+### One behaviour change to a Step 4 test
+
+`test_call_then_button_then_launch_then_measure` asserted `/measure` returned `not_ready`,
+which was the Step 4 stub answering. It now asserts a real measurement and that
+`lift == treated_rate - control_rate`. Reporting it rather than burying it.
+
+### Not done, by instruction
+
+No n8n, no Cognee, no learning curve chart in the dashboard yet, no real telephony. `.env`
+was never opened, printed or edited. Network went only to `api.sarvam.ai` for the speech
+round trip. Nothing pushed.
+
+### The whole loop, offline, no network
+
+```
+GET /health                200  ok
+    mode=replay llm=sarvam-105b tts=bulbul:v3 stt=saaras:v3 key_present=True
+POST /triage               200  ok
+    12 lapsed, value at risk 9460, worth a call True
+POST /generate             200  ok
+    5 candidates from the llm
+POST /simulate             200  ok
+
+    candidate                                       LOW     MEDIUM       HIGH   chosen
+    lapsed_winback_lapsed_regulars_1            148.03     186.62     107.02    MEDIUM
+    offpeak_fill_offpeak_slot_2                  -4.09x     -8.23x    -24.66x   REFUSED
+    attach_upsell_anchor_buyers_3              -103.00x   -236.06x   -522.64x   REFUSED
+    offpeak_fill_offpeak_slot_4                  -4.09x     -8.23x    -24.66x   REFUSED
+    attach_upsell_anchor_buyers_5              -103.00x   -236.06x   -522.64x   REFUSED
+
+POST /call                 200  ok
+    call call_1c57bd4347, brief for lapsed_winback_lapsed_regulars_1 at level MEDIUM
+    script: नमस्ते Ramesh जी, आपके 12 पुराने रेगुलर कस्टमर आना बंद कर गए हैं, जिससे आपको हर महीने करीब ₹9,460 का नुकसान हो रहा है। अगर हम उनके पास एक 20% chhoot chai pe भेजें तो कैसा रहेगा? हम सिर्फ 10 लोगों को ही मैसेज करेंगे, बाकी 2 को बाहर रखेंगे ताकि हमें पता चले कि ऑफर सच में काम कर रहा है या नहीं। क्या मैं भेज दूँ?
+GET /soundbox/state        200  ok
+    audio rendered from cache, no network
+GET /soundbox              200  ok  (both fallback buttons present)
+GET /soundbox/audio        200  ok  (938732 bytes of wav)
+POST /soundbox/button      200  ok
+    approved via button, transcript 'Haan, bhej do.'
+POST /campaign/launch      200  ok
+    campaign camp_5cce124a63, 10 treated and 2 held back
+POST /measure              200  ok
+    lift -0.100 = 4 of 10 treated minus 1 of 2 held back, incremental revenue -14.78
+    predicted uplift 0.140, measured -0.100, error 0.240
+GET /learning              200  ok
+    campaign 1 believed 0.140, campaign 1 believes 0.140
+GET /grid                  200  ok
+    5 candidates by 3 levels, the model proposes the action and the segment, the simulator
+GET /decisions             200  ok
+    9 decision lines logged: health, triage, generate, simulate, call, voice_reply, campaign_launch, measure, grid
+
+ALL STEPS PASSED OFFLINE, NO NETWORK TOUCHED
+```
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+124 passed in 10.50s
+
+$ python -m scripts.check_data
+all checks passed
+```
+
+**Next: Step 6, n8n orchestration and the judge dashboard.**
+
+---
+
+## Step 4: local soundbox and API (Fri 18 Sep, early)
+
+Status: **done, 86 tests pass, the whole loop runs offline, Sarvam speech is live.**
+
+### 1. Bug check: the Brief already used the ranked winner
+
+Checked first, as asked. It was **not** a bug. `simulate.rank()` sorts every candidate by
+expected profit, fills the accepted list in that order, and sets `recommended` to
+`accepted[0]`; `run_night.build_brief()` is handed that object and nothing else. The
+model's preferred candidate has never reached the Brief except by being the most
+profitable one.
+
+Two tests now pin it down so a later refactor cannot quietly break it. One feeds the
+candidates in deliberately wrong order, attach upsell first and winback last, and asserts
+the winback still wins. The other asserts `recommended` equals the maximum expected profit
+across the accepted list.
+
+One real defect did turn up next to it, worth recording: `_log()` in `api/main.py` took a
+positional parameter called `decision` while several callers also passed `decision=` in
+their keyword extras, which raised `TypeError: got multiple values`. Renamed to `outcome`.
+A second one in the same place: `run_night.log_decision()` binds its log path as a default
+argument, evaluated at import, so pointing the path elsewhere was silently ignored and the
+tests were asserting against a file nothing was writing to. The API now passes the path
+explicitly at call time.
+
+### 2. Offer depth moved into code, and the ranking changed
+
+The LLM now proposes `action_type`, `target_segment`, `offer_item`, a rationale and the
+customer message. It no longer proposes an offer level at all, and the prompt tells it not
+to hint at one. `simulate.rank()` prices LOW, MEDIUM and HIGH for **every** candidate,
+keeps the most profitable level that survives the guardrails and fits what is left of the
+discount budget, and refuses the candidate only if all three levels fail.
+
+The full grid comes back on the ranking as `level_grid`, one row per candidate with all
+three levels, so the dashboard can show the working rather than the conclusion.
+
+```
+candidate                                       LOW     MEDIUM       HIGH   chosen
+lapsed_winback_lapsed_regulars_1            148.03     186.62     107.02    MEDIUM
+offpeak_fill_offpeak_slot_2                  -4.09x     -8.23x    -24.66x   REFUSED
+attach_upsell_anchor_buyers_3              -103.00x   -236.06x   -522.64x   REFUSED
+offpeak_fill_offpeak_slot_4                  -4.09x     -8.23x    -24.66x   REFUSED
+attach_upsell_anchor_buyers_5              -103.00x   -236.06x   -522.64x   REFUSED
+```
+
+**The winback is worth more than it was.** It ran at 107.02 in Step 3 because the model
+picked HIGH on a hunch. Priced properly it is worth **186.62 at MEDIUM**, twenty percent
+off rather than thirty five. The model's taste in discounts was costing about eighty
+rupees a campaign, which is the entire argument for this change in one line.
+
+**Yes, the fifty percent winback now survives, at a shallower level.** Asked plainly, so
+answered plainly: the `winback_lapsed_chai_50` fixture is accepted, at MEDIUM, with
+identical numbers to the ten percent fixture. It is not that the guardrails got weaker. It
+is that a candidate can no longer ask for fifty percent off at all, so the two fixtures now
+describe the same action and the deep one has nothing left to distinguish it. The depth is
+not the proposer's to choose, whether the proposer is a language model or a hand written
+placeholder.
+
+That does retire one Step 2 test. `test_deep_discount_breaks_the_margin_floor` asserted a
+candidate asking for fifty percent was refused on the margin floor, and it was checking a
+route that no longer exists. It is replaced by three tests that are strictly stronger:
+
+- every depth on the code owned menu already clears the margin floor, so the floor cannot
+  be breached by construction rather than by catching a bad proposal
+- put an illegal depth on the menu and the grid refuses that level and runs the candidate
+  at a legal one, which proves the floor still bites inside the sweep
+- the fifty percent fixture comes out at a depth drawn from the menu, below fifty
+
+Worth saying out loud on stage: with a fifty five percent gross margin and a twenty five
+percent floor, the deepest legal discount is forty percent, and the menu tops out at thirty
+five. The margin floor has stopped being a filter on proposals and become a constraint on
+what the system is able to offer. That is a better place for it.
+
+### 3. Sarvam speech findings, read off docs.sarvam.ai on 18 Sep 2026
+
+| | Text to speech | Speech to text |
+|---|---|---|
+| Endpoint | `POST https://api.sarvam.ai/text-to-speech` | `POST https://api.sarvam.ai/speech-to-text` |
+| Body | JSON | `multipart/form-data` |
+| Model | **`bulbul:v3`**, legacy `bulbul:v2` | **`saaras:v3`** default, `saaras:v4` latest |
+| Response | `{"audios": ["<base64 wav>"]}`, join then decode | `{"transcript": "..."}` |
+| Limits | 2,500 characters per request | 30 seconds per request, batch API beyond |
+| Rates | 8000, 16000, 22050, 24000 Hz, plus 32000, 44100, 48000 on v3 REST only. Default 24000 | raw PCM needs `input_audio_codec` and must be 16 kHz |
+| Formats | WAV out | WAV, MP3, AAC, AIFF, OGG, OPUS, FLAC, MP4, AMR, WMA, **WebM**, auto detected |
+| Other | 30 plus speakers, `shubh` default, pace 0.5x to 2.0x | modes transcribe, translate, verbatim, translit, codemix |
+
+The single most useful line in either document is that speech to text auto detects
+**WebM**. Browser `MediaRecorder` hands us WebM and nothing else without a fight, so the
+microphone blob goes straight up with no transcoding step, no ffmpeg dependency and no
+conversion bug to debug at eight in the morning.
+
+`bulbul:v3` rendered the full 260 character Hindi script to a 938 KB WAV on the first try.
+Both models are in `.env.example` as `SARVAM_TTS_MODEL`, `SARVAM_TTS_SPEAKER` and
+`SARVAM_STT_MODEL`.
+
+### 4. The soundbox
+
+`voice/local_soundbox.py` implements `dial(merchant_id, brief) -> Decision` from
+`voice/base.py`. The flow: `dial()` renders the filled Hindi script through Sarvam TTS,
+parks a pending call, and returns immediately. The browser page plays the WAV, records four
+seconds of microphone audio, posts it back, Sarvam transcribes it and `classify_reply()`
+reads it.
+
+**The two buttons are the point.** HAAN and NAHI sit on the page at 27 point type and
+produce a `Decision` that is indistinguishable from the spoken one: same fields, same
+values, only `modifications.via` differs. There is a test asserting the two paths return
+the same shape. They need no microphone permission, no network and no Sarvam credit.
+
+Reading the answer is phrase matching, not a model. Forty plus approval and refusal
+phrases in Roman and Devanagari, whole word matched.
+
+- **Unclear reprompts once, then stops.** A second unclear reply ends the call as
+  undecided rather than guessing. Guessing here spends a merchant's money.
+- **A reply holding both a yes and a no is unclear**, because someone saying "haan nahi
+  nahi rehne do" is changing their mind.
+- **Except when one is a fragment of the other.** "mat bhejo" contains "bhejo", which is an
+  approval phrase. The longer, more specific phrase wins, so "mat bhejo" is a refusal.
+
+### 5. The API
+
+Eight endpoints, each one a step n8n can call on Friday, plus three that drive the page.
+Every one validates with pydantic and appends exactly one line to `logs/decisions.jsonl`.
+`/campaign/launch` is the mid call endpoint the Sarvam agent tool will hit in Step 5; it
+records the approval, returns a campaign id and reports the treated and holdout counts.
+`/measure` answers `not_ready` on purpose until Step 5 builds it.
+
+### How to launch the soundbox
+
+```bash
+uvicorn api.main:app --reload
+curl -s -X POST localhost:8000/call -H "Content-Type: application/json" -d "{}"
+# open the soundbox_url it returns, for example
+#   http://localhost:8000/soundbox?call_id=call_70c3283ee4
+```
+
+Press **Play the call** to hear the Hindi script, then either **Answer with the mic** or
+one of the two big buttons. With `LLM_MODE=replay` the whole thing runs with the network
+unplugged, because the script text, the candidates and the WAV are all cached.
+
+### Decisions made
+
+1. **A cheaper level is better than no campaign.** When the best level does not fit the
+   remaining discount budget, the ranking drops to the most profitable level that does,
+   rather than refusing the candidate outright.
+2. **Bare "ji" is not an approval.** It was in the list, and it should not have been: a
+   shopkeeper saying "ji?" is asking you to repeat yourself, not agreeing to spend money.
+3. **`offer_level` stayed on the generated candidate model as an ignored field** so cached
+   answers recorded before this step still load instead of failing validation.
+4. **The network blocker moved to the transport layer.** `httpx.HTTPTransport` and
+   `AsyncHTTPTransport` are patched rather than `httpx.Client.post`, because FastAPI's
+   TestClient is itself an httpx client and the old blocker was strangling it.
+
+### A real bug the tests caught, worth knowing
+
+The first version of the reply normaliser kept characters where `character.isalnum()` was
+true and turned everything else into a space. Devanagari vowel signs and the anusvara are
+combining marks, category Mc and Mn, and **`isalnum()` is false for them**, so every Hindi
+word was being torn into pieces and not one Devanagari approval matched. The normaliser now
+strips a named punctuation set and keeps everything else. Anything doing string work on
+Indic text should assume this trap is present until proved otherwise.
+
+### Not done, by instruction
+
+No real telephony, no holdout assignment, no dispatch, no measurement, no learning curve,
+no n8n, no Cognee. `.env` was never opened, printed or edited. Network was limited to
+`docs.sarvam.ai` and `api.sarvam.ai`. Nothing pushed.
+
+### The whole loop, offline, no network
+
+```
+GET /health                200  ok
+    mode=replay llm=sarvam-105b tts=bulbul:v3 stt=saaras:v3 key_present=True
+POST /triage               200  ok
+    12 lapsed, value at risk 9460, worth a call True
+POST /generate             200  ok
+    5 candidates from the llm
+POST /simulate             200  ok
+
+    candidate                                       LOW     MEDIUM       HIGH   chosen
+    lapsed_winback_lapsed_regulars_1            148.03     186.62     107.02    MEDIUM
+    offpeak_fill_offpeak_slot_2                  -4.09x     -8.23x    -24.66x   REFUSED
+    attach_upsell_anchor_buyers_3              -103.00x   -236.06x   -522.64x   REFUSED
+    offpeak_fill_offpeak_slot_4                  -4.09x     -8.23x    -24.66x   REFUSED
+    attach_upsell_anchor_buyers_5              -103.00x   -236.06x   -522.64x   REFUSED
+
+POST /call                 200  ok
+    call call_70c3283ee4, brief for lapsed_winback_lapsed_regulars_1 at level MEDIUM
+    script: नमस्ते Ramesh जी, आपके 12 पुराने रेगुलर कस्टमर आना बंद कर गए हैं, जिससे आपको हर महीने करीब ₹9,460 का नुकसान हो रहा है। अगर हम उनके पास एक 20% chhoot chai pe भेजें तो कैसा रहेगा? हम सिर्फ 10 लोगों को ही मैसेज करेंगे, बाकी 2 को बाहर रखेंगे ताकि हमें पता चले कि ऑफर सच में काम कर रहा है या नहीं। क्या मैं भेज दूँ?
+GET /soundbox/state        200  ok
+    audio rendered from cache, no network
+GET /soundbox              200  ok  (both fallback buttons present)
+GET /soundbox/audio        200  ok  (938732 bytes of wav)
+POST /soundbox/button      200  ok
+    approved via button, transcript 'Haan, bhej do.'
+POST /campaign/launch      200  ok
+    campaign camp_154001f721, 10 treated and 2 held back
+POST /measure              200  ok
+    not_ready, as expected until Step 5
+GET /decisions             200  ok
+    8 decision lines logged: health, triage, generate, simulate, call, voice_reply, campaign_launch, measure
+
+ALL STEPS PASSED OFFLINE, NO NETWORK TOUCHED
+```
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+86 passed in 6.77s
+
+$ python -m scripts.check_data
+all checks passed
+```
+
+**Next: Step 5, holdout assignment, dispatch, measurement and the learning curve.**
+
+---
+
+## Step 3: LLM generation and the call brief (Thu 17 Sep, night)
+
+Status: **done, 40 tests pass, Step 1 and Step 2 checks all still pass. Sarvam is live.**
+
+### Sarvam findings, read off docs.sarvam.ai on 17 Sep 2026
+
+| | |
+|---|---|
+| Endpoint | `POST https://api.sarvam.ai/v1/chat/completions` |
+| Auth header | `api-subscription-key`, confirmed. `Authorization: Bearer` also accepted |
+| Auth failure | 403, not 401, exactly as CLAUDE.md warned |
+| Model | **`sarvam-105b`**. `sarvam-105b-conversations` is the voice agent variant |
+| JSON output | **No `response_format`, no `json_schema`, no JSON mode documented anywhere** |
+| Parameters | messages, temperature, top_p, max_tokens, seed, stop, reasoning_effort, wiki_grounding, presence_penalty, frequency_penalty |
+
+Two findings that cost real time and are worth knowing before Friday:
+
+1. **Sarvam-M is deprecated and no longer served.** CLAUDE.md named it as the generation
+   model. The docs now say plainly that it has been removed from the Chat Completions API
+   and to migrate to `sarvam-105b`. CLAUDE.md is corrected.
+2. **The model thinks by default, and the thinking is billed against `max_tokens`.** The
+   first live call came back with `content: null`, a populated `reasoning_content` and
+   `finish_reason: length`: it had spent the entire token budget deliberating and never
+   answered. Sending `reasoning_effort: null` disables reasoning completely and fixes it.
+   For prompts that want a fixed JSON shape rather than deliberation this is the right
+   setting anyway, and it is faster and cheaper.
+
+Because there is no JSON mode, structure is asked for in the prompt and enforced on our
+side: strip code fences by slicing, `json.loads`, validate with pydantic. No regex touches
+a model response anywhere in the codebase.
+
+### What was built
+
+- **`core/llm.py`**, new. Sarvam client, sixty second timeout, one retry on timeouts, 429
+  and 5xx, immediate stop on 403. `LLM_MODE` is live, record or replay. Successful
+  responses are saved to `data/llm_cache/<hash>.json`, keyed on a hash of the exact
+  request. The key is read from the environment and never printed, logged, returned in an
+  error message or written to the cache, and there is a test that the cache files contain
+  neither the key nor the header name.
+- **`core/generate.py`**, now real. `resolve_items()`, `propose()`, `call_script()`, the
+  number guard, and the fillers that put code's numbers into the model's sentences.
+- **`core/holdout.py`**. `HOLDOUT_SHARE = 0.15` and a counting helper. No assignment logic
+  yet, that is Step 5.
+- **`voice/base.py`**. `Brief`, `BriefNumbers` and `Decision` as pydantic models, plus the
+  `dial()` signature that raises NotImplementedError. No backend yet.
+- **`core/simulate.py`**, corrected. See below.
+- **`core/run_night.py`**, rewired. Generation, simulation, brief, filled Hindi script.
+- **`tests/test_generate.py`**, 18 new tests. Every one runs with httpx hard blocked.
+
+### 1. The simulator correctness fix
+
+The old single rate was wrong, and the instruction to split it was right. It shrank zero
+returns out of twelve toward a prior that was itself a guess about how people respond to an
+offer, so "would have come back anyway" and "came back because we called" were the same
+number. The holdout exists precisely to tell those apart, so folding them together made the
+measurement in Step 5 unable to correct anything.
+
+Now there are two, and they never touch:
+
+```
+baseline_return_rate  0.0500  MEASURED  12 unprompted lapse episodes in this shop's ledger,
+                                        0 returned, shrunk toward a 0.08 prior worth 20
+                                        observations
+offer_uplift          PRIOR             PRIOR_OFFER_UPLIFT = LOW 0.08, MEDIUM 0.14,
+                                        HIGH 0.20, additive on top of baseline
+```
+
+Every episode behind the baseline is genuinely unprompted, because this shop has never run
+a campaign. Incremental returners are `treated_count x offer_uplift`. The discount is paid
+on baseline plus incremental, because a coupon does not ask why somebody came back. Only
+the treated group is priced at all, since the holdout is never messaged.
+
+Gap shaped actions get gap shaped priors, `PRIOR_OFFPEAK_GAP_CAPTURE` and
+`PRIOR_ATTACH_GAP_CAPTURE`, expressed as the share of a **measured** gap an offer closes.
+They cannot invent headroom that the shop's own data does not show.
+
+**Two of the three expected outcomes held, one moved. Reporting it rather than tuning it.**
+
+| Expected | Result |
+|---|---|
+| Winback still ranks first | Yes, and it is the only accepted action |
+| The fifty percent winback still refused | Yes, on both the margin floor and negative profit |
+| Tuesday stays marginal | Marginal, but it crossed zero: was +3.91, now -8.23, so it is now refused |
+
+The Tuesday flip is a consequence of the fix, not of tuning. Three things moved against it
+at once and no constant was touched to make it happen: the old multiplicative uplift
+applied to the whole slot baseline, whereas the new additive capture applies only to the
+measured gap; the discount is now charged against baseline plus incremental rather than a
+multiplied total; and only 85 percent of the segment is priced now that the holdout is
+carved out. A campaign that was worth four rupees was always inside the noise, and the
+corrected arithmetic simply puts it on the other side of zero. The attach upsell moved the
+same way, from +268.96 to -103.00, for the same reason. Both refusals are honest: paying a
+discount to everyone who already attaches a snack, in order to win a few more, does lose
+money.
+
+### 2. Record and replay
+
+`LLM_MODE=replay` is the demo day insurance policy. With `httpx.Client.post` replaced by a
+function that raises, the entire nightly loop runs to completion and prints identical
+output, because every model answer comes from `data/llm_cache/`. The cache is committed, so
+it works on a fresh clone with no key at all. There is a test for exactly this, and another
+proving replay refuses to invent an answer it has not got rather than silently falling back.
+
+### 3. What the model actually produced
+
+**Item resolution: 38 of 41 raw spellings clustered correctly, 92.7 percent.** All eleven
+chai variants collapsed to one key, including `CHAI 10`, `tea spl`, `chay` and the
+Devanagari `चाय`. The only errors are three coffee names: it split `filter kaapi`, `kaapi`
+and `Filter Coffee` away from `coffee`, `cofee` and `कॉफी`. That is arguably the model being
+right and our synthetic data being wrong, since filter coffee and instant coffee are
+genuinely different drinks in Bengaluru, but it is scored as an error because the ground
+truth says one product.
+
+**The model chose a HIGH offer level and the simulator priced it at 107.02 rupees**, where
+the hand written LOW placeholder was worth 148.03. The model is not optimising the discount
+depth, it is picking a vibe, and code turns the vibe into a percentage. Worth noting for
+Friday: having the simulator price all three levels of each proposed action and keep the
+best is a small change and a genuine improvement, but it is not what Step 3 asked for and
+the numbers above are what the system actually does today.
+
+### 4. The number guard
+
+Implemented with `string.Formatter().parse()`, which hands back literal text and
+placeholder names separately, so the check needs no regex. It rejects ASCII digits,
+Devanagari digits, the percent sign and the rupee sign anywhere in literal text, and also
+rejects placeholders code cannot fill and malformed braces. A tripped guard gets one retry
+that tells the model exactly what was wrong, then the candidate is dropped and logged.
+
+The call script has a stricter rule still: all six placeholders are **required**, not merely
+allowed. The first script the model wrote omitted `merchant_name` and `treated_count`, which
+would have had the agent ask the merchant to approve a campaign without telling him how many
+people it would message. The guard caught it, the retry fixed it.
+
+### Decisions made
+
+1. **`action_type` is a free string, not an enum.** The open action space is the "best use
+   of AI" argument, and the simulator already refuses what it cannot price. Constraining
+   the field would have traded that away for a schema that validates more often.
+2. **`offer_item` is resolved against the menu, not trusted.** The model returned "a
+   complimentary bun" as a product key. Code now accepts only a key that appears in the
+   resolved product list and falls back to the segment anchor otherwise.
+3. **`message_template` defaults to empty rather than being a required field.** The model
+   dropped it entirely on the first attempt and pydantic rejected the whole batch, which
+   threw away four good candidates over one missing field. Now a missing message is a
+   candidate level problem that the retry can fix and the guard can drop.
+4. **The owner's name is the first word of the shop name.** The ledger stores "Ramesh Tea
+   Stall" and has no proprietor field, and "Namaste Ramesh Tea Stall ji" is not a sentence
+   anyone would say. `owner_name()` is a documented demo stand in that a real merchant
+   profile removes.
+5. **`seed` is sent on every request.** Sarvam documents it for repeatable results, which
+   makes the record and replay cache keys meaningful rather than a lucky coincidence.
+6. **The customer id stands in for the customer name** in the sample messages. Inventing
+   names would be inventing data, and the privacy answer is that the merchant never sees
+   the identity anyway.
+
+### Verified, not assumed
+
+- Live call to Sarvam succeeded, model `sarvam-105b`, no 403.
+- Replay with `httpx.Client.post` raising runs the full loop and exits zero.
+- No cache file contains the key or the string `api-subscription-key`.
+- `.env` was never opened, printed or edited. Only `.env.example` was written, and it
+  carries variable names and the model id, no values.
+- Network traffic was limited to `docs.sarvam.ai` and `api.sarvam.ai`.
+
+### Word for word output
+
+```
+CALL SCRIPT TEMPLATE, as sarvam-105b wrote it:
+नमस्ते {merchant_name} जी, आपके {lapsed_count} पुराने रेगुलर कस्टमर आना बंद कर गए हैं, जिससे आपको हर महीने करीब {value_at_risk} का नुकसान हो रहा है। अगर हम उनके पास एक {offer} भेजें तो कैसा रहेगा? हम सिर्फ {treated_count} लोगों को ही मैसेज करेंगे, बाकी {holdout_count} को बाहर रखेंगे ताकि हमें पता चले कि ऑफर सच में काम कर रहा है या नहीं। क्या मैं भेज दूँ?
+
+CALL SCRIPT FILLED, as the agent speaks it:
+नमस्ते Ramesh जी, आपके 12 पुराने रेगुलर कस्टमर आना बंद कर गए हैं, जिससे आपको हर महीने करीब ₹9,460 का नुकसान हो रहा है। अगर हम उनके पास एक 35% chhoot chai pe भेजें तो कैसा रहेगा? हम सिर्फ 10 लोगों को ही मैसेज करेंगे, बाकी 2 को बाहर रखेंगे ताकि हमें पता चले कि ऑफर सच में काम कर रहा है या नहीं। क्या मैं भेज दूँ?
+
+THREE CUSTOMER MESSAGES:
+template: नमस्ते {customer_name}, हमें आपकी बहुत याद आ रही है। {shop_name} पर {offer} के साथ आपका स्वागत है।
+  C0111  नमस्ते C0111, हमें आपकी बहुत याद आ रही है। Ramesh Tea Stall पर 35% chhoot chai pe के साथ आपका स्वागत है।
+  C0142  नमस्ते C0142, हमें आपकी बहुत याद आ रही है। Ramesh Tea Stall पर 35% chhoot chai pe के साथ आपका स्वागत है।
+  C0164  नमस्ते C0164, हमें आपकी बहुत याद आ रही है। Ramesh Tea Stall पर 35% chhoot chai pe के साथ आपका स्वागत है।
+
+RANKING
+baseline return rate  0.0500  MEASURED  12 unprompted lapse episodes in the ledger, 0 came back on their own, shrunk toward a 0.08 prior worth 20 observations
+offer uplift          PRIOR     {"LOW": 0.08, "MEDIUM": 0.14, "HIGH": 0.2}
+
+candidate                                level  baseline   uplift    inc rev   discount    profit
+lapsed_winback_lapsed_regulars_high_3    HIGH     0.0500   0.2000     964.89     422.14    107.02  ACCEPTED
+offpeak_fill_offpeak_slot_medium_1       MEDIUM   0.1463   0.1281      64.48      27.63     -8.23  REFUSED
+offpeak_fill_offpeak_slot_medium_5       MEDIUM   0.1463   0.1281      64.48      27.63     -8.23  REFUSED
+attach_upsell_anchor_buyers_low_2        LOW      0.0638   0.0090     244.22     197.16   -103.00  REFUSED
+attach_upsell_anchor_buyers_low_4        LOW      0.0638   0.0090     244.22     197.16   -103.00  REFUSED
+    offpeak_fill_offpeak_slot_medium_1: negative expected profit: -8.23 rupees over 30 days
+    offpeak_fill_offpeak_slot_medium_5: negative expected profit: -8.23 rupees over 30 days
+    attach_upsell_anchor_buyers_low_2: negative expected profit: -103.00 rupees over 30 days
+    attach_upsell_anchor_buyers_low_4: negative expected profit: -103.00 rupees over 30 days
+```
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+........................................                                 [100%]
+40 passed in 2.32s
+
+$ python -m scripts.check_data
+all checks passed
+```
+
+**Next: Step 4, the voice layer.**
+
+---
+
+## Step 2: triage and simulator (Thu 17 Sep, late evening)
+
+Status: **done, 22 tests pass, all Step 1 data checks still pass.**
+
+### What was built
+
+- **`core/ledger.py`**, new. Read only SQLite access shared by triage and the simulator:
+  visit history per customer, weekday and hour slot counts, baskets, realised item prices.
+  Opens the database in read only mode so the nightly loop physically cannot write to the
+  ledger it is reasoning about.
+- **`core/triage.py`**. `score(merchant_id, today)` returns the opportunity score, the
+  evidence behind it and `worth_a_call`. Pure arithmetic, no LLM, three signals:
+  lapsed regulars, off peak gaps, basket affinity gaps.
+- **`core/simulate.py`**. Takes structured candidate dicts and returns a ranked list with
+  every number that produced the rank. Guardrails in code: margin floor, monthly discount
+  budget, positive expected profit required.
+- **`core/fixtures.py`**, new. Four hand written placeholder candidates, marked in a box
+  comment as placeholders that `core/generate.py` replaces in Step 3.
+- **`core/run_night.py`**. `python -m core.run_night --merchant tea_stall_01` prints the
+  whole night and appends one JSON line per decision to `logs/decisions.jsonl`.
+- **`tests/`**. 22 tests across `test_triage.py` and `test_simulate.py`, with a session
+  scoped `conftest.py` so the ledger is read once.
+- **CLAUDE.md repo layout** gained the two new modules, `ledger.py` and `fixtures.py`.
+
+### The result that matters
+
+Triage rediscovers **all twelve** ground truth customer ids from transactions alone, and
+values them at **9,460 rupees a month** against a ground truth of 9,385, which is 0.6
+percent off the 9,400 the demo says out loud. It also finds the dead Tuesday afternoon
+(85 percent below the same hours on other days) and the chai snack affinity gap (6.4
+percent attach against 10.9 percent on filter coffee) without being told either exists.
+
+The simulator ranks the winback first at 295 rupees expected profit, and refuses the 50
+percent discount twice over, once on the margin floor and once on negative profit.
+
+### Decisions made
+
+1. **Lapsed is defined relative to each customer's own rhythm,** not by a fixed number of
+   days. A regular visits at least 55 days out of 180 with a typical gap of 3 days or
+   less; lapsed means silence for at least 14 days or five times that customer's own gap,
+   whichever is longer. This is why the twelve separate cleanly from 130 weekly customers
+   who also go quiet for stretches.
+2. **The opportunity score is denominated in rupees a month at stake,** not an abstract
+   0 to 100. Lapsed value counts in full because it is money the shop already earned and
+   is now losing. Off peak and affinity upside are softer, so they enter at 0.20 weight.
+3. **Two thresholds have to clear, not one:** 1,500 rupees a month and 3 percent of the
+   shop's own revenue. A number that is large in rupees but trivial for the merchant is
+   not worth a phone call, and this is what keeps call volume near the 3 percent the cost
+   argument depends on.
+4. **The return rate is learned from this shop, shrunk toward a prior.** The ledger yields
+   12 observed lapse episodes among regulars, none of whom came back on their own. Beta
+   shrinkage against a 0.15 prior with weight 20 gives 0.094. This is the prepared answer
+   to "how do you handle a merchant with two weeks of data" made executable: no episodes
+   means the prior, many episodes means the shop's own data.
+5. **Only incremental revenue counts, but every discount is paid.** The control group
+   would have converted at the baseline anyway, so its revenue is not ours to claim, while
+   the discount goes to everyone who redeems including those returners. That asymmetry is
+   the entire reason deep discounts fail here, and it is what the holdout in Step 5 will
+   verify.
+6. **Priors are in one labelled block in `simulate.py`,** named `PRIORS`, so a judge can
+   see exactly which numbers are assumed and which are measured. Every one of them is
+   replaced by measured lift once campaigns exist. Nothing in that block came from a
+   language model and nothing in it ever will.
+7. **Refusals are returned, not dropped.** A rejected candidate comes back with its full
+   arithmetic and the reasons it was refused, because "here is what I refused to do and
+   why" is a better answer on stage than a short list.
+8. **An unknown action type is refused rather than guessed.** When the LLM invents a
+   campaign type in Step 3 that the simulator cannot price, it says so instead of
+   inventing a number. There is a test for this.
+9. **The off peak candidate is barely profitable, at about 4 rupees,** and it is left in
+   the ranking rather than tuned upward. Messaging 126 people to recover a small slot
+   genuinely is marginal, and a simulator that sometimes says "this is not worth doing"
+   is more convincing than one where everything wins.
+
+### Verified, not assumed
+
+- `python -m core.run_night --today 2026-08-20`, a week before the cohort goes quiet,
+  correctly prints **NO CALL TONIGHT**: no lapsed regulars, opportunity 419 rupees against
+  a 1,500 threshold. The silent night is logged to `decisions.jsonl` too.
+- `test_triage_does_not_read_the_ground_truth_file` booby traps `open()` and reruns
+  triage, so a read of the answer key raises however it is spelled. Grepping the source
+  would have been weaker and, as it happens, would have failed on the docstring saying
+  the file is not read.
+
+### Not done, by instruction
+
+No LLM generation, no voice layer, no holdout, no measurement, no API, no dashboard. No
+network calls. `.env` untouched, nothing pushed.
+
+### One nightly cycle, end to end
+
+```
+Ramesh Tea Stall, night of 2026-09-17
+=====================================
+  ₹33691 a month over the last 180 days, 2116 transactions a month, average ticket ₹15.93
+  397 customers active, 40 of them regulars
+
+Lapsed regulars
+===============
+  customer   last visit     silent visit days monthly value
+  C0111      2026-08-24       24 d        157           ₹815
+  C0142      2026-08-25       23 d        158           ₹813
+  C0164      2026-08-25       23 d        158           ₹812
+  C0268      2026-08-25       23 d        158           ₹812
+  C0139      2026-08-24       24 d        157           ₹800
+  C0241      2026-08-25       23 d        158           ₹796
+  C0228      2026-08-23       25 d        156           ₹794
+  C0252      2026-08-23       25 d        156           ₹778
+  C0329      2026-08-26       22 d        159           ₹774
+  C0073      2026-08-24       24 d        157           ₹773
+  C0080      2026-08-25       23 d        158           ₹761
+  C0137      2026-08-24       24 d        157           ₹731
+
+  Value at risk: ₹9460 a month across 12 customers.
+  How they were found: a regular visits at least 55 days in 180 and typically waits at most 3.0 days, lapsed means silent for at least 14 days or 5 times that customer's own gap
+
+Other signals
+=============
+  Off peak  Tuesday 14:00 to 17:00, 1.27 transactions against a norm of 8.68, 85 percent down, ₹506 a month
+  Affinity  chai attaches an add on 6.4 percent of the time, filter_coffee manages 10.9 percent, ₹1436 a month
+
+Triage decision
+===============
+  lapsed value at risk      9459.67  x 1.00  =     9459.67
+  off peak upside            505.92  x 0.20  =      101.18
+  affinity upside           1436.39  x 0.20  =      287.28
+  ----------------------------------------------------
+  opportunity score         9848.13 rupees a month at stake, 29.2 percent of revenue
+  threshold                 1500.00 and 3.0 percent of revenue
+
+  WORTH A CALL. Both thresholds cleared.
+
+Simulator
+=========
+  Return rate learned from this shop: 12 lapse episodes, 0 came back on their own, shrunk to 0.094 against a 0.15 prior.
+  Guardrails: margin floor 25 percent, monthly discount budget ₹1500, positive expected profit required.
+
+Ranked actions, expected profit over 30 days
+============================================
+
+  1. Win back the regulars who stopped coming   [winback_lapsed_chai_10]
+     offer          10 percent off chai for 7 days
+     reach          12 customers messaged
+     baseline       9.38 percent respond with no contact
+     uplift         x2.46 expected from the message and the offer
+     incremental    1.65 responses beyond what would have happened anyway
+     revenue        ₹779.00 incremental
+     gross profit   ₹428.45 at 55 percent margin
+     discount cost  ₹131.11, paid on every redemption including the customers who were coming back anyway
+     message cost   ₹1.80
+     EXPECTED PROFIT ₹295.54
+       based on: 12 lapsed regulars found by triage from the ledger
+       based on: 12 organic lapse episodes observed at this shop, 0 returned, shrunk to 0.094 against a 0.15 prior
+       based on: cohort is worth 9460 rupees a month, 788 each
+       based on: a returner is assumed to spend 60 percent of their old cadence
+
+  2. Get a snack onto the chai order   [attach_snack_with_chai_10]
+     offer          10 percent off snack for 28 days
+     reach          315 customers messaged
+     baseline       6.38 percent respond with no contact
+     uplift         x1.57 expected from the message and the offer
+     incremental    65.96 responses beyond what would have happened anyway
+     revenue        ₹1154.30 incremental
+     gross profit   ₹634.86 at 55 percent margin
+     discount cost  ₹318.65, paid on every redemption including the customers who were coming back anyway
+     message cost   ₹47.25
+     EXPECTED PROFIT ₹268.96
+       based on: chai attaches an add on 6.4 percent of the time against 10.9 percent on filter_coffee
+       based on: the filter_coffee attach rate is the ceiling, this shop has already proved it
+       based on: 1820 chai orders expected in the next 30 days
+       based on: an add on is worth 17.50 rupees here
+
+  3. Fill the dead Tuesday afternoon   [offpeak_tuesday_afternoon_15]
+     offer          15 percent off chai for 28 days
+     reach          126 customers messaged
+     baseline       14.63 percent respond with no contact
+     uplift         x2.03 expected from the message and the offer
+     incremental    5.62 responses beyond what would have happened anyway
+     revenue        ₹89.52 incremental
+     gross profit   ₹49.24 at 55 percent margin
+     discount cost  ₹26.43, paid on every redemption including the customers who were coming back anyway
+     message cost   ₹18.90
+     EXPECTED PROFIT ₹3.91
+       based on: Tuesday 14:00 to 17:00 does 1.27 transactions against a norm of 8.68
+       based on: a nudge is assumed to recover 15 percent of that measured gap
+       based on: 126 customers already shop those hours and can be messaged
+       based on: revenue per extra visit is this shop's own average ticket, 15.93
+
+Refused
+=======
+  Win back the same regulars with a deep discount   [winback_lapsed_chai_50]
+     refused: margin floor: a 50 percent discount leaves 10 percent margin, floor is 25
+     refused: negative expected profit: -200.81 rupees over 30 days
+
+Recommendation
+==============
+  Win back the regulars who stopped coming, expected profit ₹295.54 over 30 days.
+  Next step, once Step 3 is in: the LLM writes this in Hindi with placeholders,
+  the merchant approves it by voice, and a 15 percent holdout decides the truth.
+
+Decision log
+============
+  Appended to logs\decisions.jsonl
+```
+
+### Test suite
+
+```
+$ python -m pytest tests/ -q
+......................                                                   [100%]
+22 passed in 1.43s
+```
+
+**Next: Step 3, LLM candidate generation.**
+
+---
+
+## Step 1: scaffold and synthetic ledger (Thu 17 Sep, evening)
+
+Status: **done, all data checks pass.**
+
+### What was built
+
+- **CLAUDE.md corrections.** Build order rewritten around the real calendar (17 Sep 2026
+  is a Thursday, not a Wednesday): Thu evening, Fri morning, Fri afternoon, Fri 8pm video
+  deadline, Sat polish. Repo layout now lists `core/run_night.py`, `requirements.txt`,
+  `STATUS.md`, `scripts/`, `tests/` and `logs/`. Conventions gained the placeholder rule:
+  LLM copy carries `{lapsed_count}` and `{value_at_risk}`, code fills every number from
+  the simulator.
+- **Repo scaffold.** `data/ core/ voice/ memory/ api/ dashboard/ workflows/ scripts/
+  tests/ logs/`, each Python package with an `__init__.py` and each module a one line
+  docstring stating its job. Every module is a stub except the two below.
+- **`.venv`** created with Python 3.12.4. `requirements.txt` installed: pandas, numpy,
+  scikit-learn, fastapi, uvicorn, python-dotenv, httpx, pydantic, pytest. No cognee yet,
+  that is a Friday afternoon decision on a one hour timebox.
+- **`.gitignore`** (`.venv/`, `.env`, `__pycache__/`, `*.db`, `logs/`) and
+  **`.env.example`** with variable names only, no values.
+- **`data/generate.py`**, run with `python -m data.generate`. Builds 18 months of UPI
+  transactions for `tea_stall_01`, a Bengaluru tea stall, seeded at 20260917 so every run
+  is identical. Writes `data/dukaan.db` (tables `merchants`, `customers`, `transactions`)
+  and `data/ground_truth.json`.
+- **`scripts/check_data.py`**, run with `python -m scripts.check_data`. Validates every
+  requirement in the CLAUDE.md synthetic data section and exits non-zero on any failure.
+
+### The ledger
+
+400 customers, 34,506 transactions over 36,849 line items, 2025-03-17 to 2026-09-16.
+Customer ids are synthetic (`C0137`, `payer0137@okdukaan`). No names, no phone numbers.
+Three segments: 40 daily regulars, 130 weekly, 230 occasional.
+
+The twelve lapsed regulars are the demo's whole opening line. They visit at a tuned rate
+until late August and then stop completely, with the cohort's lapse date at 2026-08-27,
+twenty one days before today. Their combined monthly value lands at **9,385 rupees**,
+which is the figure the triage layer has to rediscover on its own.
+
+### Decisions made
+
+1. **The 9,400 target is tuned, not written down.** `data/generate.py` holds a
+   `TARGET_COMBINED_MONTHLY` constant and searches for the visit rate that hits it, which
+   settled at 1.685 visits per day. The achieved value is recorded in
+   `ground_truth.json` for evaluation. Nothing under `core/`, `voice/`, `memory/` or
+   `api/` may read either. Triage must compute value at risk from the ledger.
+2. **Value at risk has one definition, applied twice and independently.** Spend in the
+   180 days ending at the lapse date, divided by six. The generator computes it to tune,
+   `check_data.py` recomputes it from SQL. They agree, so the definition is not circular.
+3. **Line items, not baskets.** One row per item with a shared `txn_id`, so basket
+   affinity ("tea buyers never add a snack") is a join rather than a parse. Snack attach
+   on chai orders is 6.07 percent.
+4. **The dead Tuesday is a shift in when people come, not how many.** Hour weights for
+   14:00 to 16:59 are cut to 0.14 on Tuesdays only, so those visits move to the morning
+   and evening rather than vanishing. The slot runs at 1.05 transactions per day against
+   an 8.05 baseline on other weekdays, 87 percent down, well past the 50 percent the
+   requirement asks for.
+5. **Customer ids are shuffled before they are handed out.** The lapsed twelve came out
+   as C0001 to C0012 on the first run, which would look staged on the judge dashboard.
+   They are now scattered across the range, and each has its own last visit date between
+   2026-08-23 and 2026-08-26 instead of all twelve stopping on the same day.
+6. **`logs/` is gitignored whole,** so the empty directory is not in the commit. Code
+   that writes there creates it. Simpler than a `.gitkeep` with a negation rule.
+7. **Six true items, five to eleven raw spellings each,** mixing case, trailing prices,
+   misspellings and Devanagari: `chai`, `CHAI 10`, `tea spl`, `chay`, `चाय`. 3,761 lines
+   carry a Devanagari name. Resolving these to one product is a real capability to show.
+8. **Festival spikes are a visit rate multiplier** on the two dates, 2.4x for Diwali and
+   2.2x for Holi, which lands at 2.37x and 2.67x actual volume against an average day.
+
+### Not done, by instruction
+
+No triage, no simulator, no voice layer, no API, no dashboard. No network calls were
+made: no Sarvam, no n8n, no LLM. `.env` was never created, opened or read, and no
+secret is written anywhere in the repo. Nothing was pushed to a remote.
+
+### check_data output
+
+```
+Row counts
+----------
+   merchants            : 1
+   customers            : 400
+   transactions         : 34506
+   transaction lines    : 36849
+   segment occasional     : 230
+   segment weekly         : 130
+   segment daily_regular  : 40
+
+Date range
+----------
+   first transaction    : 2025-03-17
+   last transaction     : 2026-09-16
+   span                 : 548 days
+
+Ticket sizes
+------------
+   min ticket           : 10
+   max ticket           : 60
+   average ticket       : 15.89
+
+Time of day
+-----------
+   06:00     924  ###
+   07:00    2707  ##########
+   08:00    4145  ################
+   09:00    3547  ##############
+   10:00    2133  ########
+   11:00    1443  #####
+   12:00    1441  #####
+   13:00    1570  ######
+   14:00    1032  ####
+   15:00    1039  ####
+   16:00    1777  #######
+   17:00    3260  #############
+   18:00    3855  ###############
+   19:00    2924  ###########
+   20:00    1838  #######
+   21:00     871  ###
+
+Tuesday 2pm to 5pm versus other weekdays
+----------------------------------------
+   Mon  slot txns   623 over  79 days  =    7.89 per day
+   Tue  slot txns    83 over  79 days  =    1.05 per day
+   Wed  slot txns   630 over  79 days  =    7.97 per day
+   Thu  slot txns   603 over  78 days  =    7.73 per day
+   Fri  slot txns   673 over  78 days  =    8.63 per day
+   Sat  slot txns   738 over  78 days  =    9.46 per day
+   Sun  slot txns   498 over  78 days  =    6.38 per day
+   Tuesday 1.05 per day versus other weekday baseline 8.05, ratio 0.130
+
+Snack attach rate on chai orders
+--------------------------------
+   chai transactions    : 29766
+   with a snack         : 1807
+   attach rate          : 6.07 percent
+
+Festival days versus average day
+--------------------------------
+   average day          : 62.9 transactions
+   2025-10-20 Diwali  : 149 transactions, 2.37x average
+   2026-03-04 Holi    : 168 transactions, 2.67x average
+
+Raw item names per true_item
+----------------------------
+   chai            11 variants over  29766 lines
+      CHAI, CHAI 10, Chai Spl, chai, chai 10, chai spl 12, chay, cutting chai, tea, tea spl, चाय
+   filter_coffee    7 variants over   4740 lines
+      COFFEE, Filter Coffee, cofee, coffee, filter kaapi, kaapi, कॉफी
+   biscuit          6 variants over    605 lines
+      BISCUIT, biscuit, biscut 10, biskut, parle g, बिस्कुट
+   vada_pav         6 variants over    585 lines
+      VADAPAV, Vada Pav 20, vada pav, vada-pav, wada pav, वडा पाव
+   samosa           6 variants over    581 lines
+      SAMOSA 15, Samosa, samosa, samosa 2pc, smosa, समोसा
+   bun_maska        5 variants over    572 lines
+      BUN MASKA, bun maska, bun-maska, bunmaska, बन मस्का
+   lines with a Devanagari raw name: 3804
+
+Ground truth lapsed cohort (evaluation only)
+--------------------------------------------
+   lapse date           : 2026-08-27 (21 days before today)
+   customer   last visit   monthly spend  visits since lapse
+   C0073      2026-08-24          766.00  0
+   C0080      2026-08-25          757.50  0
+   C0111      2026-08-24          809.00  0
+   C0137      2026-08-24          723.67  0
+   C0139      2026-08-24          793.67  0
+   C0142      2026-08-25          807.00  0
+   C0164      2026-08-25          808.33  0
+   C0228      2026-08-23          779.00  0
+   C0241      2026-08-25          790.50  0
+   C0252      2026-08-23          767.67  0
+   C0268      2026-08-25          808.83  0
+   C0329      2026-08-26          774.17  0
+   combined monthly value: 9385.33
+   daily regulars still active in the last 7 days: 28
+
+Result
+------
+   all checks passed
+```
+
+**Next: Step 2, triage plus simulator.**

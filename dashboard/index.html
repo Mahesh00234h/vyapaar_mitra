@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vyapaar Mitra</title>
+<style>
+  :root {
+    /* Paytm palette. Every colour on the page and in the chart comes from here, so one
+       edit changes the theme. Nothing is downloaded: hex values and system fonts only. */
+    --navy:        #0B2559;   /* headings, the band, and all body text */
+    --paytm-blue:  #00BAF2;   /* accents, rules, borders, the verdict rule */
+    --sky:         #5FC8F5;   /* secondary accents */
+    --sky-wash:    #E8F8FE;   /* tinted fills */
+    --white:       #FFFFFF;
+    --grey:        #F1F7F8;   /* a cool mint surface for the Vyapaar Mitra identity */
+    --line:        #DDE4EF;   /* hairline borders */
+    --muted:       #52648A;   /* secondary text, navy leaning, 6.1:1 on white */
+    --faint:       #93A0B8;   /* struck through and held back */
+
+    /* These two carry meaning and stay as they were. */
+    --amber:       #8A6D1F;   /* the silent night verdict */
+    --amber-wash:  #FBF3DF;
+    --red:         #A32020;   /* a campaign that measured below zero */
+
+    /* Chart, read back by the inline SVG. */
+    --chart-grid:  #E3E9F3;
+    --chart-zero:  #AAB6CC;
+
+    --radius: 8px;            /* one radius, used everywhere */
+    --rule: 3px;              /* the left rule that marks what matters */
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 0 16px 40px;
+    background: var(--grey); color: var(--navy);
+    font-family: "Segoe UI", Roboto, "Noto Sans Devanagari", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand-mark { display: grid; place-items: center; width: 34px; height: 34px;
+                border: 1px solid rgba(255,255,255,.35); border-radius: 10px;
+                background: var(--paytm-blue); color: var(--navy);
+                font-size: 13px; font-weight: 800; letter-spacing: .03em; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+           background: var(--navy); color: var(--white);
+           border-radius: 0 0 var(--radius) var(--radius);
+           padding: 18px 20px; margin: 0 0 14px;
+           box-shadow: 0 4px 0 rgba(0, 186, 242, 0.18); }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; color: var(--white);
+       font-weight: 700; line-height: 1.2; }
+  .tagline { color: var(--sky); font-size: 13px; font-weight: 400; }
+  .live { margin-left: auto; font-size: 12px; color: var(--sky); }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+         background: var(--paytm-blue); margin-right: 5px; }
+  .intro { display: flex; justify-content: space-between; gap: 16px; align-items: center;
+           padding: 14px 18px; margin-bottom: 12px; border: 1px solid var(--line);
+           border-radius: 12px; background: linear-gradient(110deg, #FFFFFF, #E8F8FE); }
+  .intro strong { display: block; font-size: 15px; }
+  .intro span { color: var(--muted); font-size: 12px; }
+  .intro-badge { flex: 0 0 auto; padding: 6px 10px; border-radius: 999px;
+                 background: var(--navy); color: var(--white); font-size: 11px;
+                 font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+
+  /* Cards: a hairline border, no drop shadow, padding that does not waste the screen. */
+  section { background: var(--white); border: 1px solid var(--line);
+            border-radius: 12px; padding: 20px; margin-bottom: 12px;
+            box-shadow: 0 2px 10px rgba(11, 37, 89, 0.04); }
+
+  h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 14px; }
+  h2 .n { color: var(--faint); font-weight: 400; margin-right: 8px; }
+
+  .sub { color: var(--muted); font-size: 13px; }
+  .sentence { font-size: 16px; line-height: 1.45; margin: 0 0 8px; color: var(--navy); }
+  .hindi { font-size: 18px; line-height: 1.6; color: var(--navy); }
+  .note { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .empty { color: var(--muted); font-size: 15px; }
+
+  /* Panel one: three cards, weighted. The lapsed regulars card is the one that matters. */
+  .signals { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+             gap: 10px; margin: 12px 0 0; }
+  .signal-card { background: var(--grey); border: 1px solid var(--line);
+                 border-radius: var(--radius); padding: 14px 16px; }
+  .signal-card .figure { font-size: 21px; font-weight: 600; color: var(--navy);
+                         letter-spacing: -0.015em; line-height: 1.15; }
+  .signal-card .figure-unit { font-size: 12px; color: var(--muted); margin-top: 1px; }
+  .signal-card .signal-text { font-size: 13px; font-weight: 400; color: var(--muted);
+                              margin: 8px 0 0; line-height: 1.45; }
+
+  /* The one that matters: white, a blue rule, heavier type, darker sentence. */
+  .signal-card.full { background: var(--white); border-left: var(--rule) solid var(--paytm-blue); }
+  .signal-card.full .figure { font-size: 26px; font-weight: 700; }
+  .signal-card.full .signal-text { font-size: 14px; color: var(--navy); }
+
+  .decision { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 14px; }
+  .total { font-size: 26px; font-weight: 700; color: var(--navy); letter-spacing: -0.02em;
+           line-height: 1.15; }
+
+  /* The verdict is a conclusion, not a button. Text with a thick rule beside it. */
+  .verdict { display: block; font-size: 20px; font-weight: 700; letter-spacing: -0.01em;
+             margin-top: 12px; padding: 2px 0 2px 14px; }
+  .verdict.call { color: var(--navy); border-left: var(--rule) solid var(--paytm-blue); }
+  .verdict.quiet { color: var(--amber); border-left: var(--rule) solid var(--amber); }
+
+  /* Panel two: the grid. */
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th { font-size: 12px; font-weight: 600; color: var(--muted); text-align: right;
+       padding: 6px 8px; border-bottom: 2px solid var(--paytm-blue); }
+  th.left, td.left { text-align: left; }
+  td { padding: 8px; border-bottom: 1px solid var(--line); text-align: right;
+       font-size: 15px; }
+  tr.refused td { color: var(--faint); }
+  tr.refused .cand { text-decoration: line-through; }
+  .cand { font-weight: 600; font-size: 15px; color: var(--navy); }
+  .seg { display: block; font-size: 12px; color: var(--muted); font-weight: 400;
+         text-decoration: none; margin-top: 1px; }
+  .cell { display: inline-block; padding: 4px 8px; border-radius: var(--radius);
+          min-width: 68px; }
+  .cell.chosen { background: var(--paytm-blue); color: var(--navy); font-weight: 700; }
+  .cell.modelpick { outline: 2px dashed var(--sky); outline-offset: 1px; color: var(--navy);
+                    font-weight: 600; }
+  .cell.dead { color: var(--faint); }
+  .why { font-size: 12px; color: var(--red); display: block; margin-top: 2px; }
+  .legend { font-size: 12px; color: var(--muted); margin-top: 12px; }
+  .legend .swatch { display: inline-block; padding: 2px 7px; border-radius: var(--radius);
+                    margin-right: 4px; }
+
+  /* Panel three and four. */
+  .pill { display: inline-block; font-size: 12px; border: 1px solid var(--paytm-blue);
+          border-radius: var(--radius); padding: 3px 10px; color: var(--muted);
+          background: var(--sky-wash); }
+  button { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+           background: var(--white); border: 1px solid var(--paytm-blue);
+           border-radius: var(--radius); padding: 7px 14px; color: var(--navy); }
+
+  /* Dispatch. The ten treated are deliberately identical, so they are quiet and uniform.
+     The two held back carry the point of the panel, so they get the weight. */
+  .msgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+          gap: 8px; }
+  .msg { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px;
+         background: var(--white); }
+  .msg .who { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+  .msg .cid { font-size: 11px; font-weight: 400; color: var(--faint); margin-left: 6px; }
+  .msg .hindi { font-size: 13px; line-height: 1.5; color: var(--navy); }
+
+  /* Held back: dashed, tinted, and navy text, so nobody reads them as the faint ones. */
+  .msg.held { background: var(--sky-wash); border: 1px dashed var(--navy); color: var(--navy); }
+  .msg.held .who { color: var(--navy); font-weight: 700; }
+  .msg.held .cid { color: var(--muted); }
+  .held-note { font-style: italic; font-size: 13px; color: var(--navy); }
+
+  /* The chart legend, inline with the panel title. */
+  .chart-legend { float: right; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .chart-legend .key { margin-left: 14px; white-space: nowrap; }
+  .chart-legend .sw { display: inline-block; width: 14px; margin-right: 5px;
+                      vertical-align: middle; }
+  .chart-legend .line { border-top: 3px solid var(--paytm-blue); }
+  .chart-legend .dash { border-top: 2px dashed var(--navy); }
+  .chart-legend .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--white);
+                       border: 2px solid var(--navy); }
+
+  /* Panel five. */
+  .big { font-size: 19px; font-weight: 700; color: var(--navy); letter-spacing: -0.015em; }
+  .huge { font-size: 28px; font-weight: 700; color: var(--navy); letter-spacing: -0.02em;
+          line-height: 1.15; }
+  .stats { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-end; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .eq { font-size: 19px; font-weight: 700; margin-top: 12px; color: var(--navy); }
+  .eq .op { color: var(--muted); font-weight: 400; padding: 0 6px; }
+
+  @media (max-width: 640px) {
+    .huge { font-size: 24px; }
+    .signal-card.full .figure { font-size: 22px; }
+    section { padding: 16px; }
+    .intro { align-items: flex-start; flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">VM</span>
+      <h1>Vyapaar Mitra</h1>
+      <span class="tagline" id="tagline">merchant growth intelligence</span>
+    </div>
+    <span class="live"><span class="dot"></span><span id="live">connecting...</span></span>
+  </header>
+
+  <div class="intro">
+    <div><strong>From transaction patterns to measured growth.</strong>
+      <span>One merchant, one decision, one evidence-backed next step.</span></div>
+    <span class="intro-badge">Paytm merchant AI</span>
+  </div>
+
+  <section id="s1"><h2><span class="n">1</span>Tonight's decision</h2><div id="p1"></div></section>
+  <section id="s2"><h2><span class="n">2</span>The reasoning trace</h2><div id="p2"></div></section>
+  <section id="s3"><h2><span class="n">3</span>The call</h2><div id="p3"></div></section>
+  <section id="s4"><h2><span class="n">4</span>Dispatch</h2><div id="p4"></div></section>
+  <section id="s5"><h2><span class="n">5</span>Measurement</h2><div id="p5"></div></section>
+  <section id="s6"><h2><span class="n">6</span>Learning<span id="legend6"></span></h2><div id="p6"></div></section>
+
+</div>
+
+<script>
+"use strict";
+var LEVELS = ["LOW", "MEDIUM", "HIGH"];
+var el = function (id) { return document.getElementById(id); };
+
+/* The chart is inline SVG, and an SVG fill attribute cannot take a CSS variable, so it
+   reads them once from the stylesheet. The palette still lives in exactly one place. */
+var THEME = getComputedStyle(document.documentElement);
+function colour(name) { return THEME.getPropertyValue(name).trim(); }
+var C = {
+  navy: colour("--navy"),
+  blue: colour("--paytm-blue"),
+  sky: colour("--sky"),
+  muted: colour("--muted"),
+  red: colour("--red"),
+  white: colour("--white"),
+  grid: colour("--chart-grid"),
+  zero: colour("--chart-zero")
+};
+
+function esc(value) {
+  if (value === null || value === undefined) { return ""; }
+  return String(value).replace(/[&<>"']/g, function (c) {
+    return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+  });
+}
+function rs(value, digits) {
+  if (value === null || value === undefined || isNaN(value)) { return "n/a"; }
+  return "Rs " + Number(value).toLocaleString("en-IN", {
+    minimumFractionDigits: digits || 0, maximumFractionDigits: digits || 0});
+}
+function pct(value, digits) {
+  if (value === null || value === undefined || isNaN(value)) { return "n/a"; }
+  return (100 * Number(value)).toFixed(digits === undefined ? 1 : digits) + " percent";
+}
+function empty(message) { return '<p class="empty">' + esc(message) + "</p>"; }
+
+/* 1. Tonight's decision ------------------------------------------------- */
+function panelTonight(state) {
+  var t = state.tonight, m = state.merchant;
+  var html = '<p class="sentence"><b>' + esc(m.name) + "</b>, night of " + esc(m.today)
+    + '. <span class="sub">' + rs(m.baseline.monthly_revenue) + " a month, "
+    + m.baseline.active_customers + " customers active, " + m.baseline.regular_customers
+    + " of them regulars.</span></p>";
+
+  // One card per triage signal. The kind label is gone on purpose: each sentence already
+  // says what it is, so a tracked out capital heading above it was saying it twice.
+  var signals = t.signals || [];
+  if (signals.length) {
+    html += '<div class="signals">';
+    signals.forEach(function (signal) {
+      html += '<div class="signal-card' + (signal.counts_in_full ? " full" : "") + '">'
+        + '<div class="figure">' + rs(signal.monthly_value) + "</div>"
+        + '<div class="figure-unit">a month'
+        + (signal.counts_in_full ? "" : ", discounted before it counts") + "</div>"
+        + '<p class="signal-text">' + esc(signal.sentence) + "</p>"
+        + "</div>";
+    });
+    html += "</div>";
+  } else {
+    html += empty("No signal is outside this shop's own norm.");
+  }
+
+  // The total and the verdict, with the verdict the largest thing on the panel, because
+  // the decision is the point and the metrics are the working.
+  html += '<div class="decision">'
+    + '<div class="total">' + rs(t.opportunity_score) + "</div>"
+    + '<div class="sub">a month at stake, ' + pct(t.revenue_share, 0)
+    + " of this shop's revenue. Threshold is " + rs(t.thresholds.min_monthly_rupees)
+    + " and " + pct(t.thresholds.min_revenue_share, 0) + ".</div>";
+
+  html += t.worth_a_call
+    ? '<div class="verdict call">Worth a call</div>'
+    : '<div class="verdict quiet">No call tonight</div>'
+      + '<p class="note">' + esc(t.silent_reason || "") + "</p>";
+  html += "</div>";
+  return html;
+}
+
+/* 2. The reasoning trace ------------------------------------------------ */
+function panelReasoning(state) {
+  var r = state.reasoning;
+  if (!r.grid.length) {
+    return empty("No candidates tonight. Triage stopped before the model was ever asked, "
+                 + "which is the whole cost argument.");
+  }
+  var html = '<p class="sub" style="margin-top:-6px">Candidates written by the '
+    + esc(r.candidate_source === "llm" ? "language model" : "hand written placeholders")
+    + ", priced at every depth by code.</p>";
+
+  html += '<table><thead><tr><th class="left">candidate</th>';
+  LEVELS.forEach(function (level) {
+    html += "<th>" + level + " " + r.offer_levels[level] + " pc</th>";
+  });
+  html += "<th>outcome</th></tr></thead><tbody>";
+
+  r.grid.forEach(function (row) {
+    html += '<tr class="' + (row.accepted ? "" : "refused") + '">'
+      + '<td class="left"><span class="cand">' + esc(row.title || row.candidate_id)
+      + '</span><span class="seg">' + esc(row.action_type) + " to " + esc(row.segment)
+      + "</span></td>";
+    LEVELS.forEach(function (level) {
+      var cell = row.levels[level] || {};
+      var cls = "cell";
+      if (row.accepted && row.chosen_level === level) { cls += " chosen"; }
+      else if (!cell.survives) { cls += " dead"; }
+      if (row.model_suggested_level === level) { cls += " modelpick"; }
+      var value = cell.expected_profit;
+      html += '<td><span class="' + cls + '">'
+        + (value === undefined ? "n/a" : Number(value).toFixed(2))
+        + (cell.survives ? "" : " x") + "</span></td>";
+    });
+    html += "<td>" + (row.accepted
+      ? '<b style="color:var(--navy)">' + esc(row.chosen_level) + "</b>"
+      : '<span style="color:var(--red)">refused</span>'
+        + '<span class="why">' + esc(shortReason(row.rejections)) + "</span>") + "</td></tr>";
+  });
+  html += "</tbody></table>";
+
+  html += '<p class="legend"><span class="swatch cell chosen">186.62</span> the level the '
+    + "simulator chose";
+  if (r.grid.some(function (row) { return row.model_suggested_level; })) {
+    html += ' &nbsp; <span class="swatch cell modelpick">107.02</span> the level the model '
+      + "preferred";
+  } else {
+    html += " &nbsp; the model no longer proposes a depth at all, so there is nothing of its "
+      + "own to mark here";
+  }
+  html += ' &nbsp; <span class="swatch cell dead">-8.23 x</span> refused at that depth</p>';
+  html += '<p class="sentence" style="margin-top:14px"><b>' + esc(r.note) + ".</b></p>";
+  return html;
+}
+
+function shortReason(rejections) {
+  var reasons = rejections || [];
+  if (reasons.some(function (x) { return x.indexOf("margin floor") !== -1; })) {
+    return "margin floor";
+  }
+  if (reasons.some(function (x) { return x.indexOf("discount budget") !== -1; })) {
+    return "over the monthly discount budget";
+  }
+  if (reasons.some(function (x) { return x.indexOf("negative expected profit") !== -1; })) {
+    return "negative profit at every depth";
+  }
+  return reasons.length ? reasons[0] : "";
+}
+
+/* 3. The call ----------------------------------------------------------- */
+function panelCall(state) {
+  var c = state.call;
+  if (!c) { return empty("No call placed yet."); }
+  var outcome = c.approved === true ? "Approved"
+    : c.outcome === "declined" ? "Declined"
+    : c.settled ? "Undecided" : "Waiting for the merchant";
+  var tone = c.approved === true ? "var(--navy)"
+    : c.outcome === "declined" ? "var(--red)" : "var(--amber)";
+
+  var html = '<div class="sub">what the agent said, in Hindi, every figure filled by code</div>'
+    + '<p class="hindi">' + esc(c.script) + "</p>";
+  if (c.audio_url) {
+    html += '<button id="playback">Play the call</button> ';
+  }
+  html += '<span class="pill">' + esc(c.script_source) + " wrote the words</span>";
+  html += '<div style="margin-top:20px"><div class="sub">what the merchant said</div>'
+    + '<p class="hindi">' + esc(c.transcript || "nothing yet") + "</p></div>";
+  html += '<div class="big" style="color:' + tone + '">' + outcome + "</div>";
+  if (c.via) { html += '<div class="sub">answered by ' + esc(c.via) + "</div>"; }
+  return html;
+}
+
+/* 4. Dispatch ----------------------------------------------------------- */
+function panelDispatch(state) {
+  var c = state.campaign;
+  if (!c) { return empty("Nothing dispatched yet."); }
+  var html = '<p class="sentence"><b>' + c.treated.length + " messaged</b>, <b>"
+    + c.control.length + " deliberately held back</b>, at "
+    + esc(c.discount_pct) + " percent off " + esc(c.offer_applies_to) + ".</p>";
+  html += '<div class="msgs">';
+  c.treated.forEach(function (row) {
+    html += '<div class="msg"><div class="who">'
+      + esc(row.customer_name || row.customer_id)
+      + '<span class="cid">' + esc(row.customer_id) + "</span></div>"
+      + '<div class="hindi">' + esc(row.body) + "</div></div>";
+  });
+  c.control.forEach(function (row) {
+    html += '<div class="msg held"><div class="who">'
+      + esc(row.customer_name || row.customer_id)
+      + '<span class="cid">' + esc(row.customer_id) + "</span> &middot; control</div>"
+      + '<div class="held-note">no message, on purpose. This is how we know it was us.</div>'
+      + "</div>";
+  });
+  html += "</div>";
+  html += '<p class="note">' + esc(c.dispatch_note) + "</p>";
+  return html;
+}
+
+/* 5. Measurement -------------------------------------------------------- */
+function panelMeasure(state) {
+  var c = state.campaign;
+  var m = c && c.measurement;
+  if (!m) { return empty("Not measured yet. The 72 hour wait has not finished."); }
+
+  var html = '<div class="stats">'
+    + stat("treated conversion", m.treated_returns + " of " + m.treated_n,
+           pct(m.treated_rate, 0))
+    + stat("control conversion", m.control_returns + " of " + m.control_n,
+           pct(m.control_rate, 0))
+    + "</div>";
+
+  html += '<div class="eq">' + pct(m.treated_rate, 0) + '<span class="op">minus</span>'
+    + pct(m.control_rate, 0) + '<span class="op">=</span>'
+    + '<span style="color:' + (m.lift >= 0 ? "var(--navy)" : "var(--red)") + '">'
+    + pct(m.lift, 0) + " lift</span></div>";
+
+  html += '<div class="huge" style="margin-top:18px">' + rs(m.incremental_revenue)
+    + '</div><div class="sub">incremental revenue recovered over '
+    + c.horizon_days + " days, measured, not modelled</div>";
+  html += '<p class="note">Lift is the subtraction above and nothing else. The control group '
+    + "was never messaged, so whatever they did anyway is what the treated group would have "
+    + "done anyway.</p>";
+  return html;
+}
+
+function stat(key, value, sub) {
+  return '<div class="stat"><div class="k">' + esc(key) + '</div><div class="big">'
+    + esc(value) + '</div><div class="sub">' + esc(sub) + "</div></div>";
+}
+
+/* 6. Learning ----------------------------------------------------------- */
+function panelLearning(state) {
+  var l = state.learning;
+  if (!l.series.length) {
+    return empty("No campaign measured yet, so there is nothing to learn from.");
+  }
+  var html = chartSvg(l);
+  html += '<p class="sentence" style="margin-top:16px"><b>' + esc(l.headline || "") + ".</b></p>";
+  html += '<p class="note">The believed uplift is what the simulator predicts before each '
+    + "campaign. The measured lift is what the holdout actually found, including campaign two "
+    + "coming out negative because a two person control group can only produce nothing, half "
+    + "or everything.</p>";
+  return html;
+}
+
+function chartSvg(learning) {
+  var series = learning.series;
+  var W = 1060, H = 270, L = 56, R = 20, T = 16, B = 34;
+  var truth = learning.hidden_truth;
+
+  /* A fixed domain rather than one fitted to the data. Campaign two measured minus two
+     tenths from a two person control group, and letting that set the floor squashed the
+     believed uplift into a flat line, which is the one thing this chart exists to show.
+     Anything outside the domain is drawn on the axis and labelled with its true value. */
+  var LO = -0.10, HI = 0.45;
+  var clamp = function (v) { return Math.max(LO, Math.min(HI, v)); };
+
+  var n = series.length;
+  var x = function (i) { return L + (n === 1 ? (W - L - R) / 2 : (W - L - R) * i / (n - 1)); };
+  var y = function (v) { return T + (H - T - B) * (1 - (clamp(v) - LO) / (HI - LO)); };
+
+  var svg = '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" role="img" '
+    + 'aria-label="believed uplift climbing toward the hidden truth" '
+    + 'style="max-width:100%;height:auto;display:block">';
+
+  [-0.10, 0, 0.10, 0.20, 0.30, 0.40].forEach(function (v) {
+    svg += '<line x1="' + L + '" y1="' + y(v) + '" x2="' + (W - R) + '" y2="' + y(v)
+      + '" stroke="' + C.grid + '" stroke-width="1"/>'
+      + '<text x="' + (L - 9) + '" y="' + (y(v) + 4)
+      + '" text-anchor="end" font-size="12" fill="' + C.muted + '">' + v.toFixed(2) + "</text>";
+  });
+
+  /* Zero, so a negative measurement is unmistakably negative. */
+  svg += '<line x1="' + L + '" y1="' + y(0) + '" x2="' + (W - R) + '" y2="' + y(0)
+    + '" stroke="' + C.zero + '" stroke-width="1.5"/>';
+
+  /* The hidden truth, a reference rather than the headline, so it is not the boldest mark. */
+  if (truth !== null && truth !== undefined) {
+    svg += '<line x1="' + L + '" y1="' + y(truth) + '" x2="' + (W - R) + '" y2="' + y(truth)
+      + '" stroke="' + C.navy + '" stroke-width="1.5" stroke-dasharray="7 5"/>'
+      + '<text x="' + (W - R) + '" y="' + (y(truth) - 7)
+      + '" text-anchor="end" font-size="12" font-weight="400" fill="' + C.muted + '">'
+      + "hidden truth " + truth.toFixed(2) + "</text>";
+  }
+
+  /* The believed uplift, the claim, in blue. */
+  var path = series.map(function (row, i) {
+    return (i ? "L" : "M") + x(i) + " " + y(row.predicted_uplift);
+  }).join(" ");
+  svg += '<path d="' + path + '" fill="none" stroke="' + C.blue + '" stroke-width="3" '
+    + 'stroke-linejoin="round"/>';
+
+  /* Measured lift, outlined circles, red when it came out below zero. */
+  series.forEach(function (row, i) {
+    if (row.actual_uplift === null || row.actual_uplift === undefined) { return; }
+    var value = row.actual_uplift;
+    var below = value < 0;
+    var offScale = value < LO || value > HI;
+    var edge = below ? C.red : C.navy;
+    svg += '<circle cx="' + x(i) + '" cy="' + y(value) + '" r="5" fill="' + C.white
+      + '" stroke="' + edge + '" stroke-width="2"/>';
+    if (offScale) {
+      /* Pinned to the axis, with the number it really was written beside it. */
+      svg += '<text x="' + (x(i) + 10) + '" y="' + (y(value) + 4)
+        + '" font-size="12" fill="' + C.red + '">' + value.toFixed(2) + "</text>";
+    }
+  });
+
+  /* Believed uplift dots last, so the claim sits on top. */
+  series.forEach(function (row, i) {
+    svg += '<circle cx="' + x(i) + '" cy="' + y(row.predicted_uplift)
+      + '" r="4" fill="' + C.blue + '"/>';
+  });
+
+  series.forEach(function (row, i) {
+    svg += '<text x="' + x(i) + '" y="' + (H - B + 20)
+      + '" text-anchor="middle" font-size="12" fill="' + C.muted + '">' + row.sequence
+      + "</text>";
+  });
+  svg += '<text x="' + ((L + W - R) / 2) + '" y="' + (H - 4)
+    + '" text-anchor="middle" font-size="12" fill="' + C.muted + '">campaign</text>';
+
+  svg += "</svg>";
+  return svg;
+}
+
+/* The legend sits up on the panel title rather than floating over the plot. */
+function chartLegend() {
+  return '<span class="chart-legend">'
+    + '<span class="key"><i class="sw line"></i>believed uplift</span>'
+    + '<span class="key"><i class="sw dash"></i>hidden truth</span>'
+    + '<span class="key"><i class="sw dot"></i>measured lift</span>'
+    + "</span>";
+}
+
+/* wiring ---------------------------------------------------------------- */
+var lastAudio = null;
+
+function render(state) {
+  el("tagline").textContent = "an autonomous growth analyst for "
+    + state.merchant.name + ", running every night";
+  el("p1").innerHTML = panelTonight(state);
+  el("p2").innerHTML = panelReasoning(state);
+  el("p3").innerHTML = panelCall(state);
+  el("p4").innerHTML = panelDispatch(state);
+  el("p5").innerHTML = panelMeasure(state);
+  el("p6").innerHTML = panelLearning(state);
+  // Guarded: render runs every two seconds, and a missing node here would throw and take
+  // the whole page down rather than losing one legend.
+  var legend = el("legend6");
+  if (legend) { legend.innerHTML = state.learning.series.length ? chartLegend() : ""; }
+
+  var button = el("playback");
+  if (button && state.call && state.call.audio_url) {
+    button.onclick = function () {
+      if (lastAudio) { lastAudio.pause(); }
+      lastAudio = new Audio(state.call.audio_url);
+      lastAudio.play().catch(function () {
+        button.textContent = "The browser blocked playback, press again";
+      });
+    };
+  }
+  el("live").textContent = "live, " + state.llm_mode + " mode, "
+    + state.generated_at.split("T")[1];
+}
+
+function poll() {
+  fetch("/dashboard/state")
+    .then(function (response) {
+      if (!response.ok) { throw new Error(response.status); }
+      return response.json();
+    })
+    .then(function (state) {
+      try { render(state); } catch (err) {
+        el("live").textContent = "render error: " + err.message;
+      }
+    })
+    .catch(function (err) { el("live").textContent = "waiting for the API (" + err.message + ")"; });
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

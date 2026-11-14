@@ -1,0 +1,81 @@
+{
+  "merchant_id": "tea_stall_01",
+  "generated_at": "2026-11-14T11:58:19",
+  "campaigns": 2,
+  "series": [
+    {
+      "sequence": 1,
+      "campaign_id": "camp_tea_stall_01_01",
+      "offer_level": "MEDIUM",
+      "discount_pct": 20.0,
+      "predicted_uplift": 0.14,
+      "predicted_profit": 186.62,
+      "predicted_responses": 1.43,
+      "actual_uplift": 0.2,
+      "actual_profit": 364.33,
+      "incremental_returns": 2.0,
+      "treated_n": 10,
+      "treated_returns": 2,
+      "control_n": 2,
+      "control_returns": 0,
+      "uplift_error": 0.06,
+      "profit_error": 177.7070000000001
+    },
+    {
+      "sequence": 2,
+      "campaign_id": "camp_tea_stall_01_02",
+      "offer_level": "MEDIUM",
+      "discount_pct": 20.0,
+      "predicted_uplift": 0.1448,
+      "predicted_profit": 194.81,
+      "predicted_responses": 1.48,
+      "actual_uplift": -0.2,
+      "actual_profit": -620.88,
+      "incremental_returns": -2.0,
+      "treated_n": 10,
+      "treated_returns": 3,
+      "control_n": 2,
+      "control_returns": 1,
+      "uplift_error": 0.3448,
+      "profit_error": 815.6945000000001
+    }
+  ],
+  "rows": [
+    {
+      "sequence": 1,
+      "campaign_id": "camp_tea_stall_01_01",
+      "offer_level": "MEDIUM",
+      "predicted_uplift": 0.14,
+      "actual_uplift": 0.2,
+      "uplift_error": 0.06,
+      "predicted_profit": 186.62,
+      "actual_profit": 364.33,
+      "profit_error": 177.7070000000001,
+      "treated": 10,
+      "treated_returns": 2,
+      "control": 2,
+      "control_returns": 0,
+      "uplift_source": "PRIOR_OFFER_UPLIFT[MEDIUM] = 0.14, a named constant, replaced by measured lift after the first campaign",
+      "hidden_truth": 0.3,
+      "belief_error_vs_truth": 0.15999999999999998
+    },
+    {
+      "sequence": 2,
+      "campaign_id": "camp_tea_stall_01_02",
+      "offer_level": "MEDIUM",
+      "predicted_uplift": 0.1448,
+      "actual_uplift": -0.2,
+      "uplift_error": 0.3448,
+      "predicted_profit": 194.81,
+      "actual_profit": -620.88,
+      "profit_error": 815.6945000000001,
+      "treated": 10,
+      "treated_returns": 3,
+      "control": 2,
+      "control_returns": 1,
+      "uplift_source": "MEASURED, 0.145: 0.14 prior times a measured response scale of 1.03, from 1 campaigns pooled, 10 treated and 2 held back (control arm pooled with the ledger's own unprompted return rate of 0.050), pooled lift 0.155 against 0.140 expected, so this shop responds 1.10 times as strongly, shrunk to 1.03",
+      "hidden_truth": 0.3,
+      "belief_error_vs_truth": 0.15519999999999998
+    }
+  ]
+}
