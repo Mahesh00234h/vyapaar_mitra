@@ -414,12 +414,14 @@ def _voice_record(call_id: str, prompt: str, language: str = "hi-IN") -> Respons
             call_id, len(call.get("history", [])), call["audio_token"]))
     else:
         voice.say(prompt, language=language)
+    if call is not None and call.get("phase") == "approval":
+        voice.say("Haan ya nahi boliye.", language=language)
     voice.record(
         action="%s/twilio/recording?call_id=%s" %
         (twilio_telephony.public_base_url(), call_id),
         method="POST",
         max_length=30,
-        timeout=4,
+        timeout=10,
         play_beep=False,
         trim="trim-silence",
     )
