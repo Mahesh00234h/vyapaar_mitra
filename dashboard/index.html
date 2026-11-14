@@ -564,8 +564,14 @@ function startDemoCall() {
     body: "{}"
   })
     .then(function (response) {
-      if (!response.ok) { throw new Error("HTTP " + response.status); }
-      return response.json();
+      return response.text().then(function (body) {
+        var payload = {};
+        try { payload = body ? JSON.parse(body) : {}; } catch (_error) {}
+        if (!response.ok) {
+          throw new Error(payload.detail || payload.message || ("HTTP " + response.status));
+        }
+        return payload;
+      });
     })
     .then(function (result) {
       if (result.status === "no_call" || result.status === "no_viable_action") {
