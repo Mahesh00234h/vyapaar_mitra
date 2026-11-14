@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from core import (campaign as campaign_flow, dispatch, fixtures, generate, holdout, ledger,
                   llm, run_night, simulate, speech, triage)
+from data import generate as data_generate
 from core.holdout import HOLDOUT_SHARE
 from memory import store
 from voice import local_soundbox
@@ -48,6 +49,13 @@ PAGE_PATH = os.path.join(ledger.REPO_ROOT, "dashboard", "soundbox.html")
 
 # Campaigns approved on a call. Step 5 moves this into memory/store.py.
 CAMPAIGNS: dict = {}
+
+
+@app.on_event("startup")
+def ensure_ledger() -> None:
+    """Create the deterministic demo ledger when a fresh deployment has no SQLite file."""
+    if not os.path.exists(ledger.DEFAULT_DB_PATH):
+        data_generate.main()
 
 
 # --------------------------------------------------------------------------
