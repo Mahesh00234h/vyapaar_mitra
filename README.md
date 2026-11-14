@@ -158,6 +158,7 @@ DEMO_PHONE_NUMBER=...
 SARVAM_API_KEY=...
 LLM_MODE=live
 TWILIO_VALIDATE_WEBHOOKS=true
+TWILIO_STATUS_CALLBACK=false
 ```
 
 The Twilio number must be voice-capable. Trial accounts can call only verified numbers.
@@ -172,7 +173,9 @@ Use HTTP POST. Do not configure `/call` as the TwiML URL, because `/call` create
 outbound call. The call endpoint creates the outbound call, Sarvam speaks the brief,
 Twilio records the reply, Sarvam transcribes and answers it, and the existing campaign
 launches only after approval. `TWILIO_VALIDATE_WEBHOOKS=true` uses Twilio's official
-request validator in production. Set it to `false` only for local tests.
+request validator in production. Set it to `false` only for local tests. Keep
+`TWILIO_STATUS_CALLBACK=false` on trial accounts. Enable it after upgrading if your
+Twilio account permits status callback parameters.
 
 ## Cognee
 

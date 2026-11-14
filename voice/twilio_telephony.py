@@ -101,15 +101,20 @@ def dial(merchant_id: str, brief: Brief) -> Decision:
     call_id = "call_%s" % uuid.uuid4().hex[:16]
     callback = "%s/twilio/voice?call_id=%s" % (public_base_url(), call_id)
     status_callback = "%s/twilio/status?call_id=%s" % (public_base_url(), call_id)
+    call_parameters = {
+        "to": _setting("DEMO_PHONE_NUMBER"),
+        "from_": _setting("TWILIO_PHONE_NUMBER"),
+        "url": callback,
+    }
+    # Trial accounts reject optional call parameters in some account regions. POST is
+    # Twilio's default for url callbacks, so omitting method keeps the trial request small.
+    if (_setting("TWILIO_STATUS_CALLBACK") or "false").lower() in ("1", "true", "yes", "on"):
+        call_parameters["status_callback"] = status_callback
     try:
         twilio_call = Client(
             _setting("TWILIO_ACCOUNT_SID"), _setting("TWILIO_AUTH_TOKEN")
         ).calls.create(
-            to=_setting("DEMO_PHONE_NUMBER"),
-            from_=_setting("TWILIO_PHONE_NUMBER"),
-            url=callback,
-            method="POST",
-            status_callback=status_callback,
+            **call_parameters,
         )
     except TwilioRestException as exc:
         message = getattr(exc, "msg", None) or "Twilio rejected the call"
