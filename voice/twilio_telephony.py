@@ -10,6 +10,7 @@ import uuid
 import httpx
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
+from twilio.base.exceptions import TwilioRestException
 
 from memory import store
 from voice.base import Brief, Decision
@@ -110,6 +111,11 @@ def dial(merchant_id: str, brief: Brief) -> Decision:
             method="POST",
             status_callback=status_callback,
         )
+    except TwilioRestException as exc:
+        message = getattr(exc, "msg", None) or "Twilio rejected the call"
+        code = getattr(exc, "code", None)
+        suffix = " (code %s)" % code if code else ""
+        raise RuntimeError("Twilio rejected the call%s: %s" % (suffix, message)) from exc
     except Exception as exc:
         raise RuntimeError("Twilio could not create the call: %s" % type(exc).__name__) from exc
 

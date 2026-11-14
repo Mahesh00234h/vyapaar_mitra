@@ -128,6 +128,16 @@ def _log(stage: str, outcome: str, headline: str, **extra) -> None:
         run_night.LOG_PATH)
 
 
+def _safe_error_text(error: Exception) -> str:
+    """Keep provider diagnostics useful without returning configured secrets."""
+    message = str(error) or type(error).__name__
+    for name in ("TWILIO_AUTH_TOKEN", "SARVAM_API_KEY"):
+        secret = os.getenv(name)
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return message[:500]
+
+
 def _notify_callback(call_id: str, decision) -> None:
     """Tells whoever is waiting that the merchant answered. Best effort, never fatal.
 
@@ -332,12 +342,14 @@ def post_call(request: CallRequest) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
+        error_text = _safe_error_text(exc)
         _log("call", "error", "voice provider could not place the call",
              merchant_id=request.merchant_id, today=ranking["today"],
-             provider=voice_mode, error_type=type(exc).__name__)
+             provider=voice_mode, error_type=type(exc).__name__,
+             provider_error=error_text)
         raise HTTPException(
             status_code=502,
-            detail="voice provider could not place the call; check its account and phone settings",
+            detail=error_text,
         ) from exc
     # The winning candidate travels with the call, so the mid call launch dispatches exactly
     # what the merchant was read out, not a re-derivation of it.
