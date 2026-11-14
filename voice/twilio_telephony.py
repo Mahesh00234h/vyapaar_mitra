@@ -47,8 +47,6 @@ def dial(merchant_id: str, brief: Brief) -> Decision:
         url=callback,
         method="POST",
         status_callback=status_callback,
-        status_callback_method="POST",
-        status_callback_event=["completed", "busy", "failed", "no-answer", "canceled"],
     )
 
     local_soundbox.PENDING[call_id] = {

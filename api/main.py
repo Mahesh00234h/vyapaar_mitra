@@ -318,13 +318,24 @@ def post_call(request: CallRequest) -> dict:
     brief = run_night.build_brief(request.merchant_id, merchant_name, triage_result,
                                   recommended, script)
     voice_mode = (os.getenv("VOICE_MODE") or "local").strip().lower()
-    if voice_mode == "twilio":
-        decision = twilio_telephony.dial(request.merchant_id, brief)
-    elif voice_mode == "local":
-        decision = local_soundbox.dial(request.merchant_id, brief)
-    else:
-        raise HTTPException(status_code=500,
-                            detail="VOICE_MODE must be local or twilio")
+    try:
+        if voice_mode == "twilio":
+            decision = twilio_telephony.dial(request.merchant_id, brief)
+        elif voice_mode == "local":
+            decision = local_soundbox.dial(request.merchant_id, brief)
+        else:
+            raise HTTPException(status_code=500,
+                                detail="VOICE_MODE must be local or twilio")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log("call", "error", "voice provider could not place the call",
+             merchant_id=request.merchant_id, today=ranking["today"],
+             provider=voice_mode, error_type=type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail="voice provider could not place the call; check its account and phone settings",
+        ) from exc
     # The winning candidate travels with the call, so the mid call launch dispatches exactly
     # what the merchant was read out, not a re-derivation of it.
     local_soundbox.PENDING[decision.call_id]["chosen"] = recommended
