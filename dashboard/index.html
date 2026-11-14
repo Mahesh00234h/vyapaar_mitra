@@ -416,7 +416,16 @@ function panelDispatch(state) {
 function panelMeasure(state) {
   var c = state.campaign;
   var m = c && c.measurement;
-  if (!m) { return empty("Not measured yet. The 72 hour wait has not finished."); }
+  if (!m) {
+    var pending = "Not measured yet. The 72 hour wait has not finished.";
+    if (c && c.campaign_id) {
+      pending += '<div style="margin-top:18px"><button id="fast-forward-measure" '
+        + 'type="button">Simulate 72h measurement</button></div>'
+        + '<p class="note">Demo mode only. Uses the simulated world to show the '
+        + 'holdout result immediately.</p>';
+    }
+    return '<p class="empty">' + pending + "</p>";
+  }
 
   var html = '<div class="stats">'
     + stat("treated conversion", m.treated_returns + " of " + m.treated_n,
@@ -617,6 +626,27 @@ function render(state) {
       lastAudio = new Audio(state.call.audio_url);
       lastAudio.play().catch(function () {
         button.textContent = "The browser blocked playback, press again";
+      });
+    };
+  }
+  var measureButton = el("fast-forward-measure");
+  if (measureButton && state.campaign && state.campaign.campaign_id) {
+    measureButton.onclick = function () {
+      measureButton.disabled = true;
+      measureButton.textContent = "Measuring...";
+      fetch("/measure", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          campaign_id: state.campaign.campaign_id,
+          simulate_outcomes: true
+        })
+      }).then(function (response) {
+        if (!response.ok) { throw new Error("HTTP " + response.status); }
+        measureButton.textContent = "Measured, refreshing...";
+      }).catch(function () {
+        measureButton.disabled = false;
+        measureButton.textContent = "Try measurement again";
       });
     };
   }
