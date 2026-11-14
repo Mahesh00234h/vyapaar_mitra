@@ -137,8 +137,30 @@ Stubbed or simplified, deliberately:
   and rolls what each customer did. It lives in its own package and no agent module imports
   it, which a test enforces, because an agent that can read the answer key is not predicting
   anything.
-- **Real telephony is not wired.** The voice interface has two implementations behind one
-  `dial()` signature; the local soundbox is the one that runs.
+- **Twilio telephony is available behind the same call flow.** Set `VOICE_MODE=twilio`,
+  provide the Twilio credentials and a public HTTPS `PUBLIC_BASE_URL`, then deploy the
+  service. Twilio calls `/twilio/voice`, `/twilio/gather`, and `/twilio/status`. The local
+  soundbox remains the default fallback.
+
+### Twilio deployment
+
+Set these Render environment variables:
+
+```text
+VOICE_MODE=twilio
+PUBLIC_BASE_URL=https://your-render-service.onrender.com
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_PHONE_NUMBER=...
+DEMO_PHONE_NUMBER=...
+SARVAM_API_KEY=...
+LLM_MODE=live
+```
+
+The Twilio number must be voice-capable. Trial accounts can call only verified numbers.
+Keep the Auth Token and Sarvam key in Render environment variables, never in the
+repository. The call endpoint creates the outbound call, speaks the Hindi brief, gathers
+HAAN or NAHI, and launches the existing campaign only after approval.
 
 ## Cognee
 

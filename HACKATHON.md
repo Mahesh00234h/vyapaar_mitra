@@ -73,7 +73,16 @@ The dashboard shows:
 
 The local soundbox is the reliable demo voice channel. It plays the same Sarvam-generated
 Hindi script in a browser and accepts either microphone speech or the HAAN and NAHI
-buttons. The upstream logic is shared with the planned telephony adapter.
+buttons. For a live phone demo, the same flow can use the Twilio adapter and its
+`/twilio/voice`, `/twilio/gather`, and `/twilio/status` endpoints.
+
+## Live phone setup
+
+Deploy the API to Render and set `PUBLIC_BASE_URL` to the public Render HTTPS URL. Add
+the Twilio Account SID, Auth Token, voice-capable Twilio number, and verified demo phone
+number as environment variables. Set `VOICE_MODE=twilio`. Twilio calls the API to speak
+the Hindi brief and collect HAAN or NAHI. Approval enters the same campaign launch path
+as the browser soundbox, so holdout assignment and measurement do not change.
 
 ## How a merchant uses it
 

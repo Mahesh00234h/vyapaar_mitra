@@ -185,6 +185,26 @@ def test_health_is_200_and_never_reveals_the_key(client):
     assert "api-subscription-key" not in response.text
 
 
+def test_twilio_voice_and_gather_endpoints_use_the_pending_call(client, monkeypatch):
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://demo.example.com")
+    call = client.post("/call", json={"merchant_id": MERCHANT_ID})
+    assert call.status_code == 200
+    call_id = call.json()["call_id"]
+
+    voice = client.post("/twilio/voice", params={"call_id": call_id})
+    assert voice.status_code == 200
+    assert voice.headers["content-type"].startswith("application/xml")
+    assert "https://demo.example.com/twilio/gather" in voice.text
+    assert "hi-IN" in voice.text
+
+    gathered = client.post("/twilio/gather", params={
+        "call_id": call_id, "SpeechResult": "nahi"
+    })
+    assert gathered.status_code == 200
+    assert "Theek hai" in gathered.text
+    assert local_soundbox.PENDING[call_id]["decision"].outcome == "declined"
+
+
 def test_triage_endpoint(client):
     response = client.post("/triage", json={"merchant_id": MERCHANT_ID})
     assert response.status_code == 200

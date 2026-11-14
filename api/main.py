@@ -28,8 +28,8 @@ from datetime import date, datetime
 
 import httpx
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from core import (campaign as campaign_flow, dispatch, fixtures, generate, holdout, ledger,
@@ -37,6 +37,7 @@ from core import (campaign as campaign_flow, dispatch, fixtures, generate, holdo
 from core.holdout import HOLDOUT_SHARE
 from memory import store
 from voice import local_soundbox
+from voice import twilio_telephony
 from voice.base import Brief
 
 app = FastAPI(title="Vyapaar Mitra", version="0.4.0",
@@ -308,13 +309,21 @@ def post_call(request: CallRequest) -> dict:
     script = generate.call_script()
     brief = run_night.build_brief(request.merchant_id, merchant_name, triage_result,
                                   recommended, script)
-    decision = local_soundbox.dial(request.merchant_id, brief)
+    voice_mode = (os.getenv("VOICE_MODE") or "local").strip().lower()
+    if voice_mode == "twilio":
+        decision = twilio_telephony.dial(request.merchant_id, brief)
+    elif voice_mode == "local":
+        decision = local_soundbox.dial(request.merchant_id, brief)
+    else:
+        raise HTTPException(status_code=500,
+                            detail="VOICE_MODE must be local or twilio")
     # The winning candidate travels with the call, so the mid call launch dispatches exactly
     # what the merchant was read out, not a re-derivation of it.
     local_soundbox.PENDING[decision.call_id]["chosen"] = recommended
     local_soundbox.PENDING[decision.call_id]["callback_url"] = request.callback_url
 
-    _log("call", decision.outcome, "soundbox call opened for %s" % recommended["title"],
+    _log("call", decision.outcome, "%s call opened for %s"
+         % (voice_mode, recommended["title"]),
          merchant_id=request.merchant_id, today=ranking["today"],
          call_id=decision.call_id, candidate_id=brief.candidate_id,
          brief=json.loads(brief.model_dump_json()),
@@ -322,12 +331,117 @@ def post_call(request: CallRequest) -> dict:
     return {
         "status": "awaiting_reply",
         "call_id": decision.call_id,
-        "soundbox_url": "/soundbox?call_id=%s" % decision.call_id,
+        "soundbox_url": ("/soundbox?call_id=%s" % decision.call_id
+                         if voice_mode == "local" else None),
         "brief": json.loads(brief.model_dump_json()),
         "decision": json.loads(decision.model_dump_json()),
         "simulation": {"recommended": recommended, "level_grid": ranking["level_grid"],
                        "baseline": ranking["baseline"]},
     }
+
+
+def _twilio_response(response: str) -> Response:
+    return Response(content=response, media_type="application/xml")
+
+
+@app.post("/twilio/voice")
+def twilio_voice(call_id: str = "", CallSid: str = "") -> Response:
+    """Return TwiML that speaks the brief and gathers a Hindi approval."""
+    call = local_soundbox.PENDING.get(call_id)
+    if call is None:
+        response = "<Response><Say language=\"hi-IN\">Call unavailable.</Say><Hangup/></Response>"
+        return _twilio_response(response)
+
+    from twilio.twiml.voice_response import Gather, VoiceResponse
+
+    voice = VoiceResponse()
+    voice.say(call["brief"].script, language="hi-IN")
+    gather = Gather(
+        input="speech",
+        action="%s/twilio/gather?call_id=%s" %
+        (twilio_telephony.public_base_url(), call_id),
+        method="POST",
+        language="hi-IN",
+        speech_timeout="auto",
+        action_on_empty_result=True,
+    )
+    gather.say("Haan ya nahi boliye.", language="hi-IN")
+    voice.append(gather)
+    voice.say("Aapka jawab nahi mila. Dhanyavaad.", language="hi-IN")
+    voice.hangup()
+    return _twilio_response(str(voice))
+
+
+@app.post("/twilio/gather")
+def twilio_gather(call_id: str = "", SpeechResult: str = "") -> Response:
+    """Classify the spoken answer and launch an approved campaign."""
+    call = local_soundbox.PENDING.get(call_id)
+    if call is None:
+        return _twilio_response(
+            "<Response><Say language=\"hi-IN\">Call unavailable.</Say><Hangup/></Response>")
+
+    heard = (SpeechResult or "").strip()
+    classification = local_soundbox.classify_reply(heard)
+    outcome = classification["outcome"]
+    if outcome == "unclear":
+        call["reprompts"] += 1
+        response = "<Response><Say language=\"hi-IN\">Haan ya nahi boliye.</Say>" \
+                   "<Gather input=\"speech\" action=\"%s/twilio/gather?call_id=%s\" " \
+                   "method=\"POST\" language=\"hi-IN\" speechTimeout=\"auto\" " \
+                   "actionOnEmptyResult=\"true\"/></Response>" % (
+                       twilio_telephony.public_base_url(), call_id)
+        return _twilio_response(response)
+
+    decision = local_soundbox.settle(
+        call_id, outcome, transcript=heard, via="twilio", matched=classification["matched"])
+    if outcome == "approved":
+        launch = post_campaign_launch(LaunchRequest(
+            merchant_id=call["merchant_id"],
+            call_id=call_id,
+            candidate_id=call["brief"].candidate_id,
+            approved=True,
+            transcript=heard,
+            source="twilio",
+        ))
+        confirmation = "Offer bhej diya hai." if launch["status"] == "approved" \
+            else "Offer process nahi ho saka."
+    else:
+        post_campaign_launch(LaunchRequest(
+            merchant_id=call["merchant_id"],
+            call_id=call_id,
+            candidate_id=call["brief"].candidate_id,
+            approved=False,
+            transcript=heard,
+            source="twilio",
+        ))
+        confirmation = "Theek hai, offer nahi bheja jayega."
+
+    _notify_callback(call_id, decision)
+    from twilio.twiml.voice_response import VoiceResponse
+    voice = VoiceResponse()
+    voice.say(confirmation, language="hi-IN")
+    voice.hangup()
+    return _twilio_response(str(voice))
+
+
+@app.post("/twilio/status")
+def twilio_status(call_id: str = "", CallStatus: str = "") -> dict:
+    """Settle calls that ended without a spoken approval."""
+    status = (CallStatus or "").strip().lower()
+    if status not in ("busy", "failed", "no-answer", "canceled", "completed"):
+        return {"status": "ignored", "call_id": call_id, "call_status": status}
+    call = local_soundbox.PENDING.get(call_id)
+    if call is None or call.get("decision") is not None:
+        return {"status": "already_settled", "call_id": call_id, "call_status": status}
+    if status == "completed":
+        return {"status": "waiting_for_gather", "call_id": call_id}
+
+    decision = local_soundbox.settle(call_id, "no_answer", via="twilio")
+    _notify_callback(call_id, decision)
+    _log("call_outcome", "no_answer", "Twilio call ended without approval",
+         merchant_id=call["merchant_id"], call_id=call_id,
+         twilio_status=status, decision=json.loads(decision.model_dump_json()))
+    return {"status": "recorded", "call_id": call_id, "outcome": "no_answer"}
 
 
 @app.post("/campaign/launch")
