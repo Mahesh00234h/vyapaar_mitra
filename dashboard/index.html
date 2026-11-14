@@ -66,6 +66,11 @@
   .intro-badge { flex: 0 0 auto; padding: 6px 10px; border-radius: 999px;
                  background: var(--navy); color: var(--white); font-size: 11px;
                  font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .demo-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .demo-action button { background: var(--paytm-blue); border-color: var(--paytm-blue);
+                        color: var(--navy); font-weight: 700; }
+  .demo-action button:disabled { opacity: .6; cursor: wait; }
+  .demo-status { color: var(--muted); font-size: 12px; }
 
   /* Cards: a hairline border, no drop shadow, padding that does not waste the screen. */
   section { background: var(--white); border: 1px solid var(--line);
@@ -196,7 +201,10 @@
   <div class="intro">
     <div><strong>From transaction patterns to measured growth.</strong>
       <span>One merchant, one decision, one evidence-backed next step.</span></div>
-    <span class="intro-badge">Paytm merchant AI</span>
+    <div class="demo-action">
+      <button id="start-call" type="button">Start demo call</button>
+      <span class="demo-status" id="call-status">Ready when you are.</span>
+    </div>
   </div>
 
   <section id="s1"><h2><span class="n">1</span>Tonight's decision</h2><div id="p1"></div></section>
@@ -543,6 +551,44 @@ function chartLegend() {
 
 /* wiring ---------------------------------------------------------------- */
 var lastAudio = null;
+
+function startDemoCall() {
+  var button = el("start-call");
+  var status = el("call-status");
+  button.disabled = true;
+  button.textContent = "Starting call...";
+  status.textContent = "Preparing the merchant brief.";
+  fetch("/call", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: "{}"
+  })
+    .then(function (response) {
+      if (!response.ok) { throw new Error("HTTP " + response.status); }
+      return response.json();
+    })
+    .then(function (result) {
+      if (result.status === "no_call" || result.status === "no_viable_action") {
+        status.textContent = "No profitable action tonight.";
+        return;
+      }
+      if (result.soundbox_url) {
+        window.open(result.soundbox_url, "_blank");
+        status.textContent = "Soundbox opened. Answer HAAN or NAHI.";
+      } else {
+        status.textContent = "Phone call placed. Answer the merchant phone.";
+      }
+    })
+    .catch(function (error) {
+      status.textContent = "Could not start the call: " + error.message;
+    })
+    .then(function () {
+      button.disabled = false;
+      button.textContent = "Start demo call";
+    });
+}
+
+el("start-call").addEventListener("click", startDemoCall);
 
 function render(state) {
   el("tagline").textContent = "an autonomous growth analyst for "
