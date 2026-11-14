@@ -10,6 +10,9 @@ import uuid
 import httpx
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
+
+from core import speech
+from core.llm import LLMError
 from twilio.base.exceptions import TwilioRestException
 
 from memory import store
@@ -101,6 +104,13 @@ def dial(merchant_id: str, brief: Brief) -> Decision:
     call_id = "call_%s" % uuid.uuid4().hex[:16]
     callback = "%s/twilio/voice?call_id=%s" % (public_base_url(), call_id)
     status_callback = "%s/twilio/status?call_id=%s" % (public_base_url(), call_id)
+    opening_audio = None
+    try:
+        opening_audio = speech.speak(
+            brief.script, language_code=brief.language, sample_rate=8000)
+    except LLMError:
+        # Twilio's <Say> fallback still lets the call start if Sarvam is unavailable.
+        opening_audio = None
     call_parameters = {
         "to": _setting("DEMO_PHONE_NUMBER"),
         "from_": _setting("TWILIO_PHONE_NUMBER"),
@@ -128,8 +138,8 @@ def dial(merchant_id: str, brief: Brief) -> Decision:
         "call_id": call_id,
         "merchant_id": merchant_id,
         "brief": brief,
-        "audio": None,
-        "audio_by_turn": {},
+        "audio": opening_audio,
+        "audio_by_turn": {0: opening_audio} if opening_audio else {},
         "audio_error": None,
         "audio_token": secrets.token_urlsafe(24),
         "reprompts": 0,

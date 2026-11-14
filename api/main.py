@@ -399,13 +399,16 @@ def _voice_record(call_id: str, prompt: str, language: str = "hi-IN") -> Respons
     voice = VoiceResponse()
     audio = None
     if call is not None:
-        try:
-            audio = speech.speak(prompt, language_code=language, sample_rate=8000)
-            turn = len(call.get("history", []))
+        turn = len(call.get("history", []))
+        audio = call.get("audio_by_turn", {}).get(turn)
+        if audio is None:
+            try:
+                audio = speech.speak(prompt, language_code=language, sample_rate=8000)
+            except llm.LLMError as exc:
+                call["audio_error"] = type(exc).__name__
+        if audio is not None:
             call.setdefault("audio_by_turn", {})[turn] = audio
             call["audio"] = audio
-        except llm.LLMError as exc:
-            call["audio_error"] = type(exc).__name__
     if audio:
         voice.play(twilio_telephony.audio_url(
             call_id, len(call.get("history", [])), call["audio_token"]))
