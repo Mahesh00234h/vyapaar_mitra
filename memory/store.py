@@ -100,9 +100,24 @@ CREATE TABLE IF NOT EXISTS measurements (
     measured_at     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS call_sessions (
+    call_id         TEXT PRIMARY KEY,
+    merchant_id     TEXT NOT NULL,
+    twilio_sid      TEXT,
+    status          TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    candidate_id    TEXT,
+    turn_count      INTEGER NOT NULL DEFAULT 0,
+    transcript      TEXT NOT NULL DEFAULT '',
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_assign_campaign ON assignments (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_messages_campaign ON messages (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_campaign ON outcomes (campaign_id);
+CREATE INDEX IF NOT EXISTS idx_call_sessions_merchant ON call_sessions (merchant_id);
 """
 
 
@@ -139,6 +154,56 @@ def reset(path: str | None = None) -> None:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def record_call_session(conn: sqlite3.Connection, call_id: str, merchant_id: str,
+                        status: str, channel: str, candidate_id: str = "",
+                        twilio_sid: str = "", metadata: dict | None = None) -> None:
+    """Persist a call state without storing phone numbers or credentials."""
+    stamp = _now()
+    conn.execute(
+        "INSERT OR REPLACE INTO call_sessions "
+        "(call_id, merchant_id, twilio_sid, status, channel, candidate_id, turn_count, "
+        "transcript, metadata_json, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT turn_count FROM call_sessions "
+        "WHERE call_id = ?), 0), COALESCE((SELECT transcript FROM call_sessions "
+        "WHERE call_id = ?), ''), ?, COALESCE((SELECT created_at FROM call_sessions "
+        "WHERE call_id = ?), ?), ?)",
+        (call_id, merchant_id, twilio_sid, status, channel, candidate_id,
+         call_id, call_id, json.dumps(metadata or {}, ensure_ascii=False),
+         call_id, stamp, stamp))
+    conn.commit()
+
+
+def update_call_session(conn: sqlite3.Connection, call_id: str, status: str | None = None,
+                        transcript: str | None = None, turn_count: int | None = None,
+                        metadata: dict | None = None) -> None:
+    """Update only supplied call fields, preserving the existing session record."""
+    fields = []
+    values = []
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+    if transcript is not None:
+        fields.append("transcript = ?")
+        values.append(transcript)
+    if turn_count is not None:
+        fields.append("turn_count = ?")
+        values.append(turn_count)
+    if metadata is not None:
+        fields.append("metadata_json = ?")
+        values.append(json.dumps(metadata, ensure_ascii=False))
+    fields.append("updated_at = ?")
+    values.extend((_now(), call_id))
+    conn.execute("UPDATE call_sessions SET %s WHERE call_id = ?" %
+                 ", ".join(fields), values)
+    conn.commit()
+
+
+def call_session(conn: sqlite3.Connection, call_id: str) -> dict | None:
+    row = conn.execute("SELECT * FROM call_sessions WHERE call_id = ?",
+                       (call_id,)).fetchone()
+    return dict(row) if row else None
 
 
 # --------------------------------------------------------------------------

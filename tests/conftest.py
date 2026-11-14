@@ -53,4 +53,5 @@ def no_network(monkeypatch):
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
     monkeypatch.setenv("LLM_MODE", "replay")
+    monkeypatch.setenv("TWILIO_VALIDATE_WEBHOOKS", "false")
     return blocked

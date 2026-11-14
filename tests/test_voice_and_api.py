@@ -194,7 +194,8 @@ def test_twilio_voice_and_gather_endpoints_use_the_pending_call(client, monkeypa
     voice = client.post("/twilio/voice", params={"call_id": call_id})
     assert voice.status_code == 200
     assert voice.headers["content-type"].startswith("application/xml")
-    assert "https://demo.example.com/twilio/gather" in voice.text
+    assert "https://demo.example.com/twilio/recording" in voice.text
+    assert "<Record" in voice.text
     assert "hi-IN" in voice.text
 
     gathered = client.post("/twilio/gather", params={
@@ -203,6 +204,44 @@ def test_twilio_voice_and_gather_endpoints_use_the_pending_call(client, monkeypa
     assert gathered.status_code == 200
     assert "Theek hai" in gathered.text
     assert local_soundbox.PENDING[call_id]["decision"].outcome == "declined"
+
+
+def test_twilio_signature_is_required_when_enabled(client, monkeypatch):
+    monkeypatch.setenv("TWILIO_VALIDATE_WEBHOOKS", "true")
+    response = client.post("/twilio/voice")
+    assert response.status_code == 403
+
+
+def test_twilio_recording_uses_sarvam_transcription_and_conversation(client, monkeypatch):
+    from api import main
+    from voice.agent import VoiceReply
+
+    call_id = "incoming_test"
+    main.local_soundbox.PENDING[call_id] = {
+        "call_id": call_id,
+        "merchant_id": MERCHANT_ID,
+        "brief": None,
+        "audio_by_turn": {},
+        "audio_token": "test-token",
+        "history": [],
+        "transcripts": [],
+        "phase": "conversation",
+        "reprompts": 0,
+        "started_at": 0,
+        "decision": None,
+    }
+    monkeypatch.setattr(main.twilio_telephony, "download_recording",
+                        lambda _url: b"recorded-audio")
+    monkeypatch.setattr(main.speech, "transcribe",
+                        lambda *args, **kwargs: {"transcript": "aaj sales kaise badhaun"})
+    monkeypatch.setattr(main.voice_agent, "respond",
+                        lambda *args, **kwargs: VoiceReply(
+                            text="Aapke liye ek naya idea taiyar karta hoon.",
+                            language_code="hi-IN"))
+    response = client.post("/twilio/recording", params={"call_id": call_id},
+                           data={"RecordingUrl": "https://example.test/recording"})
+    assert response.status_code == 200
+    assert "Aapke liye" in response.text
 
 
 def test_triage_endpoint(client):

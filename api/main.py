@@ -7,11 +7,12 @@ HTTP nodes rather than a cron wrapped around a Python script:
     POST /triage            opportunity score and evidence
     POST /generate          LLM candidates, or the fixtures if nothing valid comes back
     POST /simulate          the level grid, the ranking and the refusals
-    POST /call              renders the script, opens a soundbox call, returns the Decision
+    POST /call              renders the script, opens a soundbox or Twilio call
     POST /campaign/launch   the mid call endpoint the Sarvam agent tool hits in Step 5
     POST /measure           stubbed until Step 5, answers not_ready
     GET  /decisions         tails logs/decisions.jsonl for the judge dashboard
 
+    POST /twilio/recording  Sarvam STT, conversational LLM and Sarvam TTS turn loop
     GET  /soundbox          the browser page that plays the script and takes the answer
     POST /soundbox/reply    microphone audio in, Decision or reprompt out
     POST /soundbox/button   the Haan and Nahi buttons
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import uuid
 from datetime import date, datetime
 
@@ -39,6 +41,7 @@ from core.holdout import HOLDOUT_SHARE
 from memory import store
 from voice import local_soundbox
 from voice import twilio_telephony
+from voice import agent as voice_agent
 from voice.base import Brief
 
 app = FastAPI(title="Vyapaar Mitra", version="0.4.0",
@@ -363,104 +366,264 @@ def _twilio_response(response: str) -> Response:
     return Response(content=response, media_type="application/xml")
 
 
-@app.post("/twilio/voice")
-def twilio_voice(call_id: str = "", CallSid: str = "") -> Response:
-    """Return TwiML that speaks the brief and gathers a Hindi approval."""
+async def _twilio_params(request: Request) -> dict:
+    form = await request.form()
+    return {str(key): str(value) for key, value in form.items()}
+
+
+async def _require_twilio_signature(request: Request, params: dict) -> None:
+    url = twilio_telephony.canonical_webhook_url(
+        request.url.path, request.url.query)
+    if not twilio_telephony.validate_signature(
+            url, params, request.headers.get("X-Twilio-Signature")):
+        raise HTTPException(status_code=403, detail="invalid Twilio webhook signature")
+
+
+def _voice_record(call_id: str, prompt: str, language: str = "hi-IN") -> Response:
+    """Render Sarvam audio, then record the next caller turn for Sarvam STT."""
+    from twilio.twiml.voice_response import VoiceResponse
+
     call = local_soundbox.PENDING.get(call_id)
-    if call is None:
-        response = "<Response><Say language=\"hi-IN\">Call unavailable.</Say><Hangup/></Response>"
-        return _twilio_response(response)
-
-    from twilio.twiml.voice_response import Gather, VoiceResponse
-
     voice = VoiceResponse()
-    voice.say(call["brief"].script, language="hi-IN")
-    gather = Gather(
-        input="speech",
-        action="%s/twilio/gather?call_id=%s" %
+    audio = None
+    if call is not None:
+        try:
+            audio = speech.speak(prompt, language_code=language, sample_rate=8000)
+            turn = len(call.get("history", []))
+            call.setdefault("audio_by_turn", {})[turn] = audio
+            call["audio"] = audio
+        except llm.LLMError as exc:
+            call["audio_error"] = type(exc).__name__
+    if audio:
+        voice.play(twilio_telephony.audio_url(
+            call_id, len(call.get("history", [])), call["audio_token"]))
+    else:
+        voice.say(prompt, language=language)
+    voice.record(
+        action="%s/twilio/recording?call_id=%s" %
         (twilio_telephony.public_base_url(), call_id),
         method="POST",
-        language="hi-IN",
-        speech_timeout="auto",
-        action_on_empty_result=True,
+        max_length=30,
+        timeout=4,
+        play_beep=False,
+        trim="trim-silence",
     )
-    gather.say("Haan ya nahi boliye.", language="hi-IN")
-    voice.append(gather)
-    voice.say("Aapka jawab nahi mila. Dhanyavaad.", language="hi-IN")
-    voice.hangup()
     return _twilio_response(str(voice))
 
 
-@app.post("/twilio/gather")
-def twilio_gather(call_id: str = "", SpeechResult: str = "") -> Response:
-    """Classify the spoken answer and launch an approved campaign."""
+def _conversation_response(call_id: str, text: str, language: str = "hi-IN",
+                           end_call: bool = False) -> Response:
+    if end_call:
+        from twilio.twiml.voice_response import VoiceResponse
+        voice = VoiceResponse()
+        call = local_soundbox.PENDING.get(call_id)
+        audio = None
+        if call is not None:
+            try:
+                audio = speech.speak(text, language_code=language, sample_rate=8000)
+                turn = len(call.get("history", []))
+                call.setdefault("audio_by_turn", {})[turn] = audio
+            except llm.LLMError:
+                audio = None
+        if audio:
+            voice.play(twilio_telephony.audio_url(
+                call_id, len(call.get("history", [])), call["audio_token"]))
+        else:
+            voice.say(text, language=language)
+        voice.hangup()
+        return _twilio_response(str(voice))
+    return _voice_record(call_id, text, language)
+
+
+@app.post("/twilio/voice")
+async def twilio_voice(request: Request, call_id: str = "", CallSid: str = "") -> Response:
+    """Start an outbound or inbound call using Sarvam-generated audio."""
+    params = await _twilio_params(request)
+    await _require_twilio_signature(request, params)
+    call_id = call_id or params.get("call_id", "")
+    CallSid = CallSid or params.get("CallSid", "")
+    call = local_soundbox.PENDING.get(call_id)
+    if call is None and CallSid:
+        call_id = "incoming_%s" % CallSid[-16:]
+        call = local_soundbox.PENDING.setdefault(call_id, {
+            "call_id": call_id,
+            "merchant_id": DEFAULT_MERCHANT,
+            "brief": None,
+            "audio_by_turn": {},
+            "audio_token": uuid.uuid4().hex,
+            "history": [],
+            "transcripts": [],
+            "phase": "conversation",
+            "reprompts": 0,
+            "started_at": datetime.now().timestamp(),
+            "decision": None,
+            "twilio_call_sid": CallSid,
+            "twilio_status": "answered",
+        })
+        connection = store.connect()
+        try:
+            if store.call_session(connection, call_id) is None:
+                store.record_call_session(connection, call_id, DEFAULT_MERCHANT,
+                                          "answered", "sarvam_telephony",
+                                          twilio_sid=CallSid,
+                                          metadata={"phase": "conversation"})
+        finally:
+            connection.close()
+    if call is None:
+        return _twilio_response(
+            "<Response><Say language=\"hi-IN\">Call unavailable.</Say><Hangup/></Response>")
+
+    twilio_telephony.update_status(call_id, "answered")
+    if call.get("brief") is not None:
+        return _voice_record(call_id, call["brief"].script, call["brief"].language)
+    return _voice_record(
+        call_id,
+        "Namaste. Main Vyapaar Mitra hoon. Aap apni dukaan ki growth ke baare mein kya jaan-na chahte hain?",
+    )
+
+
+@app.post("/twilio/recording")
+async def twilio_recording(request: Request, call_id: str = "") -> Response:
+    """Run each recorded caller turn through Sarvam STT, LLM and TTS."""
+    params = await _twilio_params(request)
+    await _require_twilio_signature(request, params)
     call = local_soundbox.PENDING.get(call_id)
     if call is None:
         return _twilio_response(
             "<Response><Say language=\"hi-IN\">Call unavailable.</Say><Hangup/></Response>")
 
-    heard = (SpeechResult or "").strip()
-    classification = local_soundbox.classify_reply(heard)
+    try:
+        audio = twilio_telephony.download_recording(params.get("RecordingUrl", ""))
+        result = speech.transcribe(audio, filename="twilio_reply.wav",
+                                   language_code="unknown")
+        heard = (result.get("transcript") or "").strip()
+    except llm.LLMError as exc:
+        call["reprompts"] += 1
+        return _conversation_response(call_id,
+                                      "Maaf kijiye, awaaz saaf nahi mili. Kripya dobara boliye.")
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        call["reprompts"] += 1
+        return _conversation_response(call_id,
+                                      "Maaf kijiye, awaaz saaf nahi mili. Kripya dobara boliye.")
+
+    call["transcripts"].append({"text": heard, "via": "sarvam_stt",
+                                "at": datetime.now().isoformat(timespec="seconds")})
+    call["history"].append({"role": "user", "content": heard})
+    connection = store.connect()
+    try:
+        session = store.call_session(connection, call_id)
+        transcript_history = json.loads(session["transcript"]) if session and session["transcript"] else []
+        transcript_history.append(heard)
+        store.update_call_session(connection, call_id, transcript=json.dumps(
+            transcript_history, ensure_ascii=False), turn_count=len(transcript_history))
+    finally:
+        connection.close()
+
+    brief = call.get("brief")
+    if brief is not None and call.get("phase") == "approval":
+        classification = local_soundbox.classify_reply(heard)
+        outcome = classification["outcome"]
+        if outcome == "unclear":
+            call["reprompts"] += 1
+            return _conversation_response(call_id, "Haan ya nahi boliye.", brief.language)
+        decision = local_soundbox.settle(
+            call_id, outcome, transcript=heard, via="twilio",
+            matched=classification["matched"])
+        twilio_telephony.update_status(call_id, "answered")
+        if outcome == "approved":
+            launch = post_campaign_launch(LaunchRequest(
+                merchant_id=call["merchant_id"], call_id=call_id,
+                candidate_id=brief.candidate_id, approved=True,
+                transcript=heard, source="twilio"))
+            response_text = ("Offer bhej diya hai. Aap aur kuch poochna chahenge."
+                             if launch["status"] == "approved"
+                             else "Offer process nahi ho saka. Aap aur kuch poochna chahenge.")
+        else:
+            post_campaign_launch(LaunchRequest(
+                merchant_id=call["merchant_id"], call_id=call_id,
+                candidate_id=brief.candidate_id, approved=False,
+                transcript=heard, source="twilio"))
+            response_text = "Theek hai, offer nahi bheja jayega. Aap aur kuch poochna chahenge."
+        call["phase"] = "conversation"
+        _notify_callback(call_id, decision)
+        return _conversation_response(call_id, response_text, brief.language)
+
+    try:
+        reply = voice_agent.respond(heard, brief, call["history"])
+        call["history"].append({"role": "assistant", "content": reply.text})
+        return _conversation_response(call_id, reply.text, reply.language_code, reply.end_call)
+    except llm.LLMError:
+        return _conversation_response(
+            call_id, "Maaf kijiye, main abhi jawab nahi de pa raha. Kripya dobara boliye.")
+
+
+@app.get("/twilio/audio")
+def twilio_audio(call_id: str, turn: int, token: str) -> FileResponse:
+    call = local_soundbox.PENDING.get(call_id)
+    if call is None or not secrets.compare_digest(token, call.get("audio_token", "")):
+        raise HTTPException(status_code=404, detail="audio unavailable")
+    audio = call.get("audio_by_turn", {}).get(turn)
+    path = (audio or {}).get("audio_path", "")
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="audio unavailable")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.post("/twilio/gather")
+async def twilio_gather(request: Request, call_id: str = "", SpeechResult: str = "") -> Response:
+    """Backward-compatible endpoint for older Twilio configurations."""
+    params = await _twilio_params(request)
+    await _require_twilio_signature(request, params)
+    call_id = call_id or params.get("call_id", "")
+    SpeechResult = SpeechResult or params.get("SpeechResult", "")
+    call = local_soundbox.PENDING.get(call_id)
+    if call is None or call.get("brief") is None:
+        return _twilio_response(
+            "<Response><Say language=\"hi-IN\">Call unavailable.</Say><Hangup/></Response>")
+    classification = local_soundbox.classify_reply((SpeechResult or "").strip())
     outcome = classification["outcome"]
     if outcome == "unclear":
-        call["reprompts"] += 1
-        response = "<Response><Say language=\"hi-IN\">Haan ya nahi boliye.</Say>" \
-                   "<Gather input=\"speech\" action=\"%s/twilio/gather?call_id=%s\" " \
-                   "method=\"POST\" language=\"hi-IN\" speechTimeout=\"auto\" " \
-                   "actionOnEmptyResult=\"true\"/></Response>" % (
-                       twilio_telephony.public_base_url(), call_id)
-        return _twilio_response(response)
-
+        return _conversation_response(call_id, "Haan ya nahi boliye.", call["brief"].language)
     decision = local_soundbox.settle(
-        call_id, outcome, transcript=heard, via="twilio", matched=classification["matched"])
-    if outcome == "approved":
-        launch = post_campaign_launch(LaunchRequest(
-            merchant_id=call["merchant_id"],
-            call_id=call_id,
-            candidate_id=call["brief"].candidate_id,
-            approved=True,
-            transcript=heard,
-            source="twilio",
-        ))
-        confirmation = "Offer bhej diya hai." if launch["status"] == "approved" \
-            else "Offer process nahi ho saka."
-    else:
-        post_campaign_launch(LaunchRequest(
-            merchant_id=call["merchant_id"],
-            call_id=call_id,
-            candidate_id=call["brief"].candidate_id,
-            approved=False,
-            transcript=heard,
-            source="twilio",
-        ))
-        confirmation = "Theek hai, offer nahi bheja jayega."
-
+        call_id, outcome, transcript=SpeechResult, via="twilio",
+        matched=classification["matched"])
+    post_campaign_launch(LaunchRequest(
+        merchant_id=call["merchant_id"], call_id=call_id,
+        candidate_id=call["brief"].candidate_id, approved=(outcome == "approved"),
+        transcript=SpeechResult, source="twilio"))
     _notify_callback(call_id, decision)
-    from twilio.twiml.voice_response import VoiceResponse
-    voice = VoiceResponse()
-    voice.say(confirmation, language="hi-IN")
-    voice.hangup()
-    return _twilio_response(str(voice))
+    return _conversation_response(
+        call_id,
+        "Offer bhej diya hai." if outcome == "approved"
+        else "Theek hai, offer nahi bheja jayega.",
+        call["brief"].language, end_call=True)
 
 
 @app.post("/twilio/status")
-def twilio_status(call_id: str = "", CallStatus: str = "") -> dict:
-    """Settle calls that ended without a spoken approval."""
+async def twilio_status(request: Request, call_id: str = "",
+                        CallStatus: str = "", CallSid: str = "") -> dict:
+    """Persist all Twilio lifecycle statuses and settle unanswered calls."""
+    params = await _twilio_params(request)
+    await _require_twilio_signature(request, params)
+    call_id = call_id or params.get("call_id", "")
+    CallStatus = CallStatus or params.get("CallStatus", "")
+    CallSid = CallSid or params.get("CallSid", "")
     status = (CallStatus or "").strip().lower()
-    if status not in ("busy", "failed", "no-answer", "canceled", "completed"):
+    allowed = ("initiated", "ringing", "in-progress", "answered", "completed",
+               "busy", "failed", "no-answer", "canceled")
+    if status not in allowed:
         return {"status": "ignored", "call_id": call_id, "call_status": status}
+    mapped = "answered" if status == "in-progress" else status
+    twilio_telephony.update_status(call_id, mapped)
     call = local_soundbox.PENDING.get(call_id)
-    if call is None or call.get("decision") is not None:
-        return {"status": "already_settled", "call_id": call_id, "call_status": status}
-    if status == "completed":
-        return {"status": "waiting_for_gather", "call_id": call_id}
-
-    decision = local_soundbox.settle(call_id, "no_answer", via="twilio")
-    _notify_callback(call_id, decision)
-    _log("call_outcome", "no_answer", "Twilio call ended without approval",
-         merchant_id=call["merchant_id"], call_id=call_id,
-         twilio_status=status, decision=json.loads(decision.model_dump_json()))
-    return {"status": "recorded", "call_id": call_id, "outcome": "no_answer"}
+    if call is None:
+        return {"status": "recorded", "call_id": call_id, "call_status": mapped}
+    if (mapped in ("busy", "failed", "no-answer", "canceled")
+            and call.get("decision") is None and call.get("brief") is not None):
+        decision = local_soundbox.settle(call_id, "no_answer", via="twilio")
+        _notify_callback(call_id, decision)
+        return {"status": "recorded", "call_id": call_id, "outcome": "no_answer"}
+    return {"status": "recorded", "call_id": call_id, "call_status": mapped}
 
 
 @app.post("/campaign/launch")

@@ -139,8 +139,10 @@ Stubbed or simplified, deliberately:
   anything.
 - **Twilio telephony is available behind the same call flow.** Set `VOICE_MODE=twilio`,
   provide the Twilio credentials and a public HTTPS `PUBLIC_BASE_URL`, then deploy the
-  service. Twilio calls `/twilio/voice`, `/twilio/gather`, and `/twilio/status`. The local
-  soundbox remains the default fallback.
+  service. Twilio starts at `/twilio/voice`, records caller turns at `/twilio/recording`,
+  and reports lifecycle events to `/twilio/status`. The recording is sent to Sarvam STT,
+  answered by the Sarvam chat model, and played back using Sarvam TTS. The local soundbox
+  remains the default fallback.
 
 ### Twilio deployment
 
@@ -148,19 +150,29 @@ Set these Render environment variables:
 
 ```text
 VOICE_MODE=twilio
-PUBLIC_BASE_URL=https://your-render-service.onrender.com
+PUBLIC_BASE_URL=https://vyapaar-mitra.onrender.com
 TWILIO_ACCOUNT_SID=...
 TWILIO_AUTH_TOKEN=...
 TWILIO_PHONE_NUMBER=...
 DEMO_PHONE_NUMBER=...
 SARVAM_API_KEY=...
 LLM_MODE=live
+TWILIO_VALIDATE_WEBHOOKS=true
 ```
 
 The Twilio number must be voice-capable. Trial accounts can call only verified numbers.
 Keep the Auth Token and Sarvam key in Render environment variables, never in the
-repository. The call endpoint creates the outbound call, speaks the Hindi brief, gathers
-HAAN or NAHI, and launches the existing campaign only after approval.
+repository. In the Twilio Console, set the Custom TwiML URL to:
+
+```text
+https://vyapaar-mitra.onrender.com/twilio/voice
+```
+
+Use HTTP POST. Do not configure `/call` as the TwiML URL, because `/call` creates an
+outbound call. The call endpoint creates the outbound call, Sarvam speaks the brief,
+Twilio records the reply, Sarvam transcribes and answers it, and the existing campaign
+launches only after approval. `TWILIO_VALIDATE_WEBHOOKS=true` uses Twilio's official
+request validator in production. Set it to `false` only for local tests.
 
 ## Cognee
 

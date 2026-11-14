@@ -166,13 +166,15 @@ def _post_tts(request: dict) -> bytes:
 
 
 def transcribe(audio: bytes, filename: str = "reply.webm",
-               stt_mode: str = DEFAULT_STT_MODE) -> dict:
+               stt_mode: str = DEFAULT_STT_MODE,
+               language_code: str | None = None) -> dict:
     """Transcribes a short reply. Cached on the audio itself so replays cost nothing."""
     if not audio:
         raise SpeechError("no audio to transcribe")
 
     key = hashlib.sha256(audio).hexdigest()[:32]
-    request = {"model": stt_model(), "mode": stt_mode, "audio_sha": key}
+    request = {"model": stt_model(), "mode": stt_mode, "audio_sha": key,
+               "language_code": language_code or "unknown"}
     cache_file = os.path.join(AUDIO_DIR, "stt_%s.json" % _digest(request))
     current = mode()
 
@@ -187,7 +189,7 @@ def transcribe(audio: bytes, filename: str = "reply.webm",
             "replay mode and no cached transcript for this audio. Use the Haan or Nahi "
             "button, which needs neither the microphone nor the network.")
 
-    transcript = _post_stt(audio, filename, stt_mode)
+    transcript = _post_stt(audio, filename, stt_mode, language_code)
     os.makedirs(AUDIO_DIR, exist_ok=True)
     with open(cache_file, "w", encoding="utf-8") as handle:
         json.dump({"transcript": transcript, "model": request["model"], "mode": stt_mode},
@@ -196,10 +198,13 @@ def transcribe(audio: bytes, filename: str = "reply.webm",
             "model": request["model"]}
 
 
-def _post_stt(audio: bytes, filename: str, stt_mode: str) -> str:
+def _post_stt(audio: bytes, filename: str, stt_mode: str,
+               language_code: str | None = None) -> str:
     headers = {AUTH_HEADER: _api_key()}
     files = {"file": (filename, audio, "application/octet-stream")}
     data = {"model": stt_model(), "mode": stt_mode}
+    if language_code:
+        data["language_code"] = language_code
     last: Exception | None = None
     for _attempt in range(RETRIES + 1):
         try:
